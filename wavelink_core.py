@@ -14,7 +14,7 @@ import logging
 import math
 import os
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from enum import Enum, auto
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Protocol, TypeVar
@@ -25,21 +25,25 @@ from websockets.typing import Origin
 from wavelink_types import (
     ApplicationInfo,
     Channel,
+    CreateProfileRequested,
     ChannelMixUpdate,
     ChannelUpdate,
     EffectUpdate,
+    FocusedAppChanged,
     FocusedAppSubscription,
     InputDevice,
     InputDeviceUpdate,
     InputUpdate,
     JsonModel,
     JsonValue,
+    LevelMeterChanged,
     LevelMeterSubscription,
     LevelMeterType,
     LevelValue,
     MainOutput,
     Mix,
     MixUpdate,
+    OutputDevice,
     OutputDeviceUpdate,
     OutputDevices,
     OutputDeviceUpdateParams,
@@ -53,6 +57,20 @@ from wavelink_types import (
 
 
 EventHandler = Callable[[dict[str, Any]], Awaitable[None] | None]
+WaveLinkEvent = (
+    InputDevice
+    | OutputDevice
+    | OutputDevices
+    | Channel
+    | Mix
+    | LevelMeterChanged
+    | FocusedAppChanged
+    | CreateProfileRequested
+    | list[InputDevice]
+    | list[Channel]
+    | list[Mix]
+)
+TypedEventHandler = Callable[[WaveLinkEvent], Awaitable[None] | None]
 
 
 class WaveLinkRpcError(RuntimeError):
@@ -140,6 +158,21 @@ class WaveLinkClient:
         "channel",
         "mix",
     )
+    TYPED_EVENT_METHODS = frozenset(
+        {
+            "inputDevicesChanged",
+            "inputDeviceChanged",
+            "outputDevicesChanged",
+            "outputDeviceChanged",
+            "channelsChanged",
+            "channelChanged",
+            "mixesChanged",
+            "mixChanged",
+            "levelMeterChanged",
+            "focusedAppChanged",
+            "createProfileRequested",
+        }
+    )
 
     def __init__(
         self,
@@ -192,6 +225,7 @@ class WaveLinkClient:
         self._next_id = 1
         self._pending: dict[int, _PendingRequest] = {}
         self._event_handlers: dict[str, list[EventHandler]] = {}
+        self._typed_event_handlers: dict[str, list[TypedEventHandler]] = {}
         self._reader_task: asyncio.Task[None] | None = None
         self._event_task: asyncio.Task[None] | None = None
         self._reconnect_task: asyncio.Task[None] | None = None
@@ -200,9 +234,40 @@ class WaveLinkClient:
         self._connected_event = asyncio.Event()
         self._close_requested = False
         self._generation = 0
-        self._desired_subscriptions: dict[str, Any] = {}
+        self._desired_focused_app_subscription: dict[str, Any] | None = None
+        self._desired_level_meter_subscriptions: dict[
+            tuple[str, str, str | None], dict[str, Any]
+        ] = {}
         self._plugin_devices: list[str] | None = None
+        self.application_info: ApplicationInfo | None = None
+        self._input_devices: list[InputDevice] = []
+        self._output_devices: list[OutputDevice] = []
+        self.main_output: MainOutput | None = None
+        self._channels: list[Channel] = []
+        self._mixes: list[Mix] = []
+        self.level_meters: LevelMeterChanged | None = None
+        self.focused_app: FocusedAppChanged | None = None
         self._logger = logging.getLogger(__name__)
+
+    @property
+    def input_devices(self) -> tuple[InputDevice, ...]:
+        """Latest input-device state obtained by RPC or notifications."""
+        return tuple(self._input_devices)
+
+    @property
+    def output_devices(self) -> tuple[OutputDevice, ...]:
+        """Latest output-device state obtained by RPC or notifications."""
+        return tuple(self._output_devices)
+
+    @property
+    def channels(self) -> tuple[Channel, ...]:
+        """Latest channel state obtained by RPC or notifications."""
+        return tuple(self._channels)
+
+    @property
+    def mixes(self) -> tuple[Mix, ...]:
+        """Latest mix state obtained by RPC or notifications."""
+        return tuple(self._mixes)
 
     # ------------------------------------------------------------------
     # Подключение и поиск порта
@@ -357,6 +422,7 @@ class WaveLinkClient:
                                 "Unsupported Wave Link interface revision: "
                                 f"{interface_revision}"
                             )
+                        self.application_info = app
 
                         await self._restore_session()
                         if self.ws is not ws or generation != self._generation:
@@ -558,10 +624,21 @@ class WaveLinkClient:
                     {"connectedDevices": list(self._plugin_devices)},
                 )
             )
-        if self._desired_subscriptions:
+        if self._desired_focused_app_subscription is not None:
             operations.append(
-                ("setSubscription", deepcopy(self._desired_subscriptions))
+                (
+                    "setSubscription",
+                    {
+                        "focusedAppChanged": deepcopy(
+                            self._desired_focused_app_subscription
+                        )
+                    },
+                )
             )
+        operations.extend(
+            ("setSubscription", {"levelMeterChanged": deepcopy(subscription)})
+            for subscription in self._desired_level_meter_subscriptions.values()
+        )
 
         for method, params in operations:
             try:
@@ -677,20 +754,104 @@ class WaveLinkClient:
                 queue.task_done()
 
     async def _dispatch_event(self, method: str, params: dict[str, Any]) -> None:
-        for handler in tuple(self._event_handlers.get(method, ())):
+        typed_event: WaveLinkEvent | None = None
+        if method in self.TYPED_EVENT_METHODS:
             try:
-                result = handler(params)
-                if inspect.isawaitable(result):
-                    await result
-            except asyncio.CancelledError:
-                task = asyncio.current_task()
-                if task is not None and task.cancelling():
-                    raise
-                self._logger.exception(
-                    "Wave Link event handler cancelled itself for %s", method
-                )
-            except Exception:
-                self._logger.exception("Wave Link event handler failed for %s", method)
+                typed_event = self._parse_typed_event(method, params)
+                typed_event = self._update_cached_event(method, typed_event)
+            except (TypeError, WaveLinkProtocolError, WaveLinkSchemaError):
+                self._logger.exception("Invalid Wave Link event payload for %s", method)
+
+        if typed_event is not None:
+            for handler in tuple(self._typed_event_handlers.get(method, ())):
+                await self._invoke_event_handler(handler, typed_event, method)
+
+        for handler in tuple(self._event_handlers.get(method, ())):
+            await self._invoke_event_handler(handler, params, method)
+
+    async def _invoke_event_handler(
+        self,
+        handler: EventHandler | TypedEventHandler,
+        payload: dict[str, Any] | WaveLinkEvent,
+        method: str,
+    ) -> None:
+        try:
+            result = handler(payload)  # type: ignore[arg-type]
+            if inspect.isawaitable(result):
+                await result
+        except asyncio.CancelledError:
+            task = asyncio.current_task()
+            if task is not None and task.cancelling():
+                raise
+            self._logger.exception(
+                "Wave Link event handler cancelled itself for %s", method
+            )
+        except Exception:
+            self._logger.exception("Wave Link event handler failed for %s", method)
+
+    def _parse_typed_event(self, method: str, params: dict[str, Any]) -> WaveLinkEvent:
+        if method == "inputDevicesChanged":
+            return parse_schema_list(params, "inputDevices", InputDevice, method)
+        if method == "inputDeviceChanged":
+            return parse_schema(params, InputDevice, method)
+        if method == "outputDevicesChanged":
+            return parse_schema(params, OutputDevices, method)
+        if method == "outputDeviceChanged":
+            return parse_schema(params, OutputDevice, method)
+        if method == "channelsChanged":
+            return parse_schema_list(params, "channels", Channel, method)
+        if method == "channelChanged":
+            return parse_schema(params, Channel, method)
+        if method == "mixesChanged":
+            return parse_schema_list(params, "mixes", Mix, method)
+        if method == "mixChanged":
+            return parse_schema(params, Mix, method)
+        if method == "levelMeterChanged":
+            return parse_schema(params, LevelMeterChanged, method)
+        if method == "focusedAppChanged":
+            return parse_schema(params, FocusedAppChanged, method)
+        if method == "createProfileRequested":
+            return parse_schema(params, CreateProfileRequested, method)
+        raise ValueError(f"Unsupported typed Wave Link event: {method}")
+
+    def _update_cached_event(self, method: str, event: WaveLinkEvent) -> WaveLinkEvent:
+        if method == "inputDevicesChanged":
+            self._input_devices = list(event)  # type: ignore[arg-type]
+        elif method == "inputDeviceChanged":
+            assert isinstance(event, InputDevice)
+            self._input_devices = _merge_identified_list(
+                self._input_devices, event, _merge_input_device
+            )
+            return next(item for item in self._input_devices if item.id == event.id)
+        elif method == "outputDevicesChanged":
+            assert isinstance(event, OutputDevices)
+            self.main_output = event.main_output
+            self._output_devices = list(event.output_devices)
+        elif method == "outputDeviceChanged":
+            assert isinstance(event, OutputDevice)
+            self._output_devices = _merge_identified_list(
+                self._output_devices, event, _merge_output_device
+            )
+            return next(item for item in self._output_devices if item.id == event.id)
+        elif method == "channelsChanged":
+            self._channels = list(event)  # type: ignore[arg-type]
+        elif method == "channelChanged":
+            assert isinstance(event, Channel)
+            self._channels = _merge_identified_list(self._channels, event, _merge_model)
+            return next(item for item in self._channels if item.id == event.id)
+        elif method == "mixesChanged":
+            self._mixes = list(event)  # type: ignore[arg-type]
+        elif method == "mixChanged":
+            assert isinstance(event, Mix)
+            self._mixes = _merge_identified_list(self._mixes, event, _merge_model)
+            return next(item for item in self._mixes if item.id == event.id)
+        elif method == "levelMeterChanged":
+            assert isinstance(event, LevelMeterChanged)
+            self.level_meters = event
+        elif method == "focusedAppChanged":
+            assert isinstance(event, FocusedAppChanged)
+            self.focused_app = event
+        return event
 
     def on(self, method: str, handler: EventHandler) -> None:
         """Зарегистрировать обработчик уведомлений указанного метода JSON-RPC."""
@@ -710,6 +871,93 @@ class WaveLinkClient:
         if not handlers:
             self._event_handlers.pop(method, None)
         return True
+
+    def on_typed(self, method: str, handler: TypedEventHandler) -> None:
+        """Register a validated object handler for a known Wave Link event."""
+        if method not in self.TYPED_EVENT_METHODS:
+            raise ValueError(f"Unsupported typed Wave Link event: {method}")
+        if not callable(handler):
+            raise TypeError("handler must be callable")
+        self._typed_event_handlers.setdefault(method, []).append(handler)
+
+    def off_typed(self, method: str, handler: TypedEventHandler) -> bool:
+        """Remove one typed event-handler registration."""
+        handlers = self._typed_event_handlers.get(method)
+        if not handlers:
+            return False
+        try:
+            handlers.remove(handler)
+        except ValueError:
+            return False
+        if not handlers:
+            self._typed_event_handlers.pop(method, None)
+        return True
+
+    async def stream_events(
+        self,
+        method: str,
+        *,
+        queue_size: int | None = None,
+    ) -> AsyncIterator[WaveLinkEvent]:
+        """Yield validated events without blocking the WebSocket event loop."""
+        if method not in self.TYPED_EVENT_METHODS:
+            raise ValueError(f"Unsupported typed Wave Link event: {method}")
+        capacity = self.event_queue_size if queue_size is None else queue_size
+        if capacity <= 0:
+            raise ValueError("queue_size must be greater than zero")
+
+        queue: asyncio.Queue[WaveLinkEvent] = asyncio.Queue(capacity)
+
+        def enqueue(event: WaveLinkEvent) -> None:
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:
+                self._logger.warning(
+                    "Dropping streamed Wave Link event %s because its queue is full",
+                    method,
+                )
+
+        self.on_typed(method, enqueue)
+        try:
+            while True:
+                event = await queue.get()
+                queue.task_done()
+                yield event
+        finally:
+            self.off_typed(method, enqueue)
+
+    async def stream_level_meters(
+        self, *, queue_size: int | None = None
+    ) -> AsyncIterator[LevelMeterChanged]:
+        stream = self.stream_events("levelMeterChanged", queue_size=queue_size)
+        try:
+            async for event in stream:
+                assert isinstance(event, LevelMeterChanged)
+                yield event
+        finally:
+            await stream.aclose()
+
+    async def stream_focused_app_changes(
+        self, *, queue_size: int | None = None
+    ) -> AsyncIterator[FocusedAppChanged]:
+        stream = self.stream_events("focusedAppChanged", queue_size=queue_size)
+        try:
+            async for event in stream:
+                assert isinstance(event, FocusedAppChanged)
+                yield event
+        finally:
+            await stream.aclose()
+
+    async def stream_input_device_changes(
+        self, *, queue_size: int | None = None
+    ) -> AsyncIterator[InputDevice]:
+        stream = self.stream_events("inputDeviceChanged", queue_size=queue_size)
+        try:
+            async for event in stream:
+                assert isinstance(event, InputDevice)
+                yield event
+        finally:
+            await stream.aclose()
 
     async def call(
         self,
@@ -817,25 +1065,36 @@ class WaveLinkClient:
         result = await self._call(
             "getApplicationInfo", None, allow_connecting=allow_connecting
         )
-        return parse_schema(result, ApplicationInfo, "getApplicationInfo")
+        info = parse_schema(result, ApplicationInfo, "getApplicationInfo")
+        self.application_info = info
+        return info
 
     async def get_channels(self) -> list[Channel]:
         result = await self.call("getChannels", None)
-        return parse_schema_list(result, "channels", Channel, "getChannels")
+        channels = parse_schema_list(result, "channels", Channel, "getChannels")
+        self._channels = channels
+        return channels
 
     async def get_mixes(self) -> list[Mix]:
         result = await self.call("getMixes", None)
-        return parse_schema_list(result, "mixes", Mix, "getMixes")
+        mixes = parse_schema_list(result, "mixes", Mix, "getMixes")
+        self._mixes = mixes
+        return mixes
 
     async def get_input_devices(self) -> list[InputDevice]:
         result = await self.call("getInputDevices", None)
-        return parse_schema_list(
+        input_devices = parse_schema_list(
             result, "inputDevices", InputDevice, "getInputDevices"
         )
+        self._input_devices = input_devices
+        return input_devices
 
     async def get_output_devices(self) -> OutputDevices:
         result = await self.call("getOutputDevices", None)
-        return parse_schema(result, OutputDevices, "getOutputDevices")
+        output_devices = parse_schema(result, OutputDevices, "getOutputDevices")
+        self.main_output = output_devices.main_output
+        self._output_devices = output_devices.output_devices
+        return output_devices
 
     async def set_plugin_info(self, connected_devices: list[str]) -> PluginInfoResult:
         """Сообщить Wave Link семейства подключённых устройств Stream Deck."""
@@ -877,6 +1136,20 @@ class WaveLinkClient:
         return await self.set_input_device(
             device_id,
             [InputUpdate(id=str(input_id), gain=LevelValue(clamp01(value)))],
+        )
+
+    async def set_input_gain_lock(
+        self, device_id: str, input_id: str, enabled: bool
+    ) -> InputDeviceUpdate:
+        """Enable or disable the hardware gain lock for an input."""
+        return await self.set_input_device(
+            device_id,
+            [
+                InputUpdate(
+                    id=str(input_id),
+                    is_gain_lock_on=bool(enabled),
+                )
+            ],
         )
 
     async def set_input_mic_pc_mix(
@@ -1013,9 +1286,7 @@ class WaveLinkClient:
             return await self.set_channel(
                 ChannelUpdate(
                     id=str(channel_id),
-                    mixes=[
-                        ChannelMixUpdate(id=str(mix_id), level=clamp01(level))
-                    ],
+                    mixes=[ChannelMixUpdate(id=str(mix_id), level=clamp01(level))],
                 )
             )
         except WaveLinkRpcError as exc:
@@ -1024,11 +1295,7 @@ class WaveLinkClient:
             return await self.set_channel(
                 ChannelUpdate(
                     id=str(channel_id),
-                    mixes=[
-                        ChannelMixUpdate(
-                            mix_id=str(mix_id), level=clamp01(level)
-                        )
-                    ],
+                    mixes=[ChannelMixUpdate(mix_id=str(mix_id), level=clamp01(level))],
                 )
             )
 
@@ -1040,9 +1307,7 @@ class WaveLinkClient:
             return await self.set_channel(
                 ChannelUpdate(
                     id=str(channel_id),
-                    mixes=[
-                        ChannelMixUpdate(id=str(mix_id), is_muted=bool(muted))
-                    ],
+                    mixes=[ChannelMixUpdate(id=str(mix_id), is_muted=bool(muted))],
                 )
             )
         except WaveLinkRpcError as exc:
@@ -1051,11 +1316,7 @@ class WaveLinkClient:
             return await self.set_channel(
                 ChannelUpdate(
                     id=str(channel_id),
-                    mixes=[
-                        ChannelMixUpdate(
-                            mix_id=str(mix_id), is_muted=bool(muted)
-                        )
-                    ],
+                    mixes=[ChannelMixUpdate(mix_id=str(mix_id), is_muted=bool(muted))],
                 )
             )
 
@@ -1065,9 +1326,7 @@ class WaveLinkClient:
         return await self.set_channel(
             ChannelUpdate(
                 id=str(channel_id),
-                effects=[
-                    EffectUpdate(id=str(effect_id), is_enabled=bool(enabled))
-                ],
+                effects=[EffectUpdate(id=str(effect_id), is_enabled=bool(enabled))],
             )
         )
 
@@ -1092,9 +1351,7 @@ class WaveLinkClient:
         )
         return parse_schema(result, Channel, "addToChannel")
 
-    async def set_subscription(
-        self, params: SubscriptionUpdate
-    ) -> SubscriptionUpdate:
+    async def set_subscription(self, params: SubscriptionUpdate) -> SubscriptionUpdate:
         """Обновить одну или несколько подписок на уведомления Wave Link."""
         if not isinstance(params, SubscriptionUpdate):
             raise TypeError("params must be SubscriptionUpdate")
@@ -1107,8 +1364,37 @@ class WaveLinkClient:
                 raise WaveLinkProtocolError(
                     f"setSubscription returned a missing {key!r} field"
                 )
-        self._desired_subscriptions.update(deepcopy(payload))
+        self._remember_subscription(payload)
         return update
+
+    def _remember_subscription(self, payload: dict[str, JsonValue]) -> None:
+        focused = payload.get("focusedAppChanged")
+        if isinstance(focused, dict):
+            if focused.get("isEnabled") is True:
+                self._desired_focused_app_subscription = deepcopy(focused)
+            else:
+                self._desired_focused_app_subscription = None
+
+        meter = payload.get("levelMeterChanged")
+        if not isinstance(meter, dict):
+            return
+        meter_type = meter.get("type")
+        target_id = meter.get("id")
+        raw_sub_id = meter.get("subId")
+        if not isinstance(meter_type, str) or not isinstance(target_id, str):
+            return
+        sub_id = raw_sub_id if isinstance(raw_sub_id, str) else None
+        key = (meter_type, target_id, sub_id)
+        if meter.get("isEnabled") is True:
+            self._desired_level_meter_subscriptions[key] = deepcopy(meter)
+            return
+
+        if sub_id is not None:
+            self._desired_level_meter_subscriptions.pop(key, None)
+            return
+        for existing_key in tuple(self._desired_level_meter_subscriptions):
+            if existing_key[:2] == (meter_type, target_id):
+                self._desired_level_meter_subscriptions.pop(existing_key, None)
 
     async def subscribe_focused_app(self, enabled: bool = True) -> SubscriptionUpdate:
         return await self.set_subscription(
@@ -1147,15 +1433,94 @@ class WaveLinkClient:
 
     async def try_subscribe_level_meters(
         self,
-    ) -> dict[LevelMeterType, SubscriptionUpdate]:
-        """Подписаться на все документированные категории индикаторов уровня."""
+    ) -> dict[LevelMeterType, list[SubscriptionUpdate]]:
+        """Subscribe to every currently available meter by its concrete ID."""
         await self.subscribe_focused_app(True)
-        results: dict[LevelMeterType, SubscriptionUpdate] = {}
-        for meter_type in self.LEVEL_METER_TYPES:
-            results[meter_type] = await self.subscribe_level_meter(
-                meter_type, "all", True
-            )
+        input_devices, output_state, channels, mixes = await asyncio.gather(
+            self.get_input_devices(),
+            self.get_output_devices(),
+            self.get_channels(),
+            self.get_mixes(),
+        )
+        targets: dict[LevelMeterType, list[str]] = {
+            "input": [
+                input_.id for device in input_devices for input_ in device.inputs or []
+            ],
+            "output": [
+                output.id
+                for device in output_state.output_devices
+                for output in device.outputs or []
+            ],
+            "channel": [channel.id for channel in channels],
+            "mix": [mix.id for mix in mixes],
+        }
+        results: dict[LevelMeterType, list[SubscriptionUpdate]] = {}
+        for meter_type, target_ids in targets.items():
+            results[meter_type] = []
+            for target_id in dict.fromkeys(target_ids):
+                results[meter_type].append(
+                    await self.subscribe_level_meter(meter_type, target_id, True)
+                )
         return results
+
+
+ModelT = TypeVar("ModelT", bound=JsonModel)
+
+
+def _merge_model(
+    existing: ModelT,
+    update: ModelT,
+    *,
+    ignored_fields: frozenset[str] = frozenset(),
+) -> ModelT:
+    """Merge a partial notification model without mutating cached instances."""
+    merged = deepcopy(existing)
+    for model_field in fields(update):
+        name = model_field.name
+        if name in ignored_fields:
+            continue
+        value = getattr(update, name)
+        if name == "extra":
+            merged.extra.update(deepcopy(value))
+        elif value is not None:
+            setattr(merged, name, deepcopy(value))
+    return merged
+
+
+def _merge_identified_list(
+    current: list[ModelT],
+    update: ModelT,
+    merger: Callable[[ModelT, ModelT], ModelT],
+) -> list[ModelT]:
+    """Return a new list with an identified partial update merged into it."""
+    identifier = getattr(update, "id")
+    result = list(current)
+    for index, existing in enumerate(result):
+        if getattr(existing, "id") == identifier:
+            result[index] = merger(existing, update)
+            return result
+    result.append(deepcopy(update))
+    return result
+
+
+def _merge_input_device(existing: InputDevice, update: InputDevice) -> InputDevice:
+    merged = _merge_model(existing, update, ignored_fields=frozenset({"inputs"}))
+    if update.inputs is not None:
+        inputs = list(existing.inputs or [])
+        for input_update in update.inputs:
+            inputs = _merge_identified_list(inputs, input_update, _merge_model)
+        merged.inputs = inputs
+    return merged
+
+
+def _merge_output_device(existing: OutputDevice, update: OutputDevice) -> OutputDevice:
+    merged = _merge_model(existing, update, ignored_fields=frozenset({"outputs"}))
+    if update.outputs is not None:
+        outputs = list(existing.outputs or [])
+        for output_update in update.outputs:
+            outputs = _merge_identified_list(outputs, output_update, _merge_model)
+        merged.outputs = outputs
+    return merged
 
 
 def expect_object(result: Any, method: str) -> dict[str, Any]:
@@ -1230,10 +1595,12 @@ def clamp01(value: float) -> float:
 __all__ = [
     "ConnectionState",
     "EventHandler",
+    "TypedEventHandler",
     "WaveLinkClient",
     "WaveLinkDisconnectedError",
     "WaveLinkProtocolError",
     "WaveLinkRpcError",
     "WaveLinkTimeoutError",
+    "WaveLinkEvent",
     "clamp01",
 ]

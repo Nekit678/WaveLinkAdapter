@@ -309,6 +309,7 @@ print(state.main_output.output_device_id, state.main_output.output_id)
 ```python
 await client.set_input_mute(device_id, input_id, True)
 await client.set_input_gain(device_id, input_id, 0.65)
+await client.set_input_gain_lock(device_id, input_id, True)
 await client.set_input_mic_pc_mix(device_id, input_id, 0.5)
 ```
 
@@ -535,9 +536,12 @@ await client.set_subscription(
 )
 ```
 
-`try_subscribe_level_meters()` последовательно подписывается на все четыре
-категории с идентификатором `all`. Поддержка такой подписки зависит от сборки
-Wave Link.
+`try_subscribe_level_meters()` получает актуальные входы, выходы, каналы и
+миксы, после чего подписывается на каждый конкретный идентификатор. Wave Link
+3.2.5 не принимает псевдоидентификатор `all`, поэтому количество запросов
+зависит от текущей конфигурации микшера. Каждая успешно включённая
+meter-подписка хранится отдельно и восстанавливается после переподключения;
+отключённая подписка удаляется из реестра восстановления.
 
 Удаление обработчика:
 
@@ -546,6 +550,38 @@ removed = client.off("focusedAppChanged", on_focused_app)
 ```
 
 `off()` возвращает `True`, если регистрация была найдена и удалена.
+
+Для известных уведомлений доступен типизированный вариант `on_typed()`.
+Обработчик получает проверенную модель из `wavelink_types`, а не словарь:
+
+```python
+from wavelink_types import FocusedAppChanged
+
+
+def on_focused_app(event: FocusedAppChanged) -> None:
+    print(event.name, event.channel.id if event.channel else None)
+
+
+client.on_typed("focusedAppChanged", on_focused_app)
+```
+
+Те же события можно читать как асинхронный поток. Внутренняя очередь потока
+ограничена, а обработчик автоматически удаляется при завершении итератора:
+
+```python
+async for meters in client.stream_level_meters(queue_size=64):
+    for meter in meters.channels or []:
+        print(meter.id, meter.level_left_percentage)
+```
+
+Также доступны `stream_focused_app_changes()`,
+`stream_input_device_changes()` и общий `stream_events()`.
+
+Полученное через RPC и уведомления состояние сохраняется в свойствах
+`application_info`, `input_devices`, `output_devices`, `main_output`,
+`channels`, `mixes`, `level_meters` и `focused_app`. Частичные уведомления
+устройства объединяются с уже известным состоянием, не стирая отсутствующие
+в уведомлении поля.
 
 Обработчики одного соединения выполняются последовательно. Долгий обработчик
 задерживает следующие события, поэтому тяжёлую работу лучше передавать в

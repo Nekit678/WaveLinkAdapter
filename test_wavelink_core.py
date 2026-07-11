@@ -19,7 +19,12 @@ from wavelink_types import (
     ChannelMix,
     ChannelUpdate,
     Effect,
+    FocusedAppChanged,
+    Input,
+    InputDevice,
     InputUpdate,
+    LevelMeterChanged,
+    LevelValue,
     MainOutput,
     OutputDevices,
     SetOutputDeviceParams,
@@ -64,6 +69,24 @@ class FakeWaveLinkSocket:
 
         if method == "getApplicationInfo":
             result: object = {"appID": "EWL", "interfaceRevision": 1}
+        elif method == "getInputDevices":
+            result = {
+                "inputDevices": [{"id": "input-device", "inputs": [{"id": "input"}]}]
+            }
+        elif method == "getOutputDevices":
+            result = {
+                "mainOutput": {
+                    "outputDeviceId": "output-device",
+                    "outputId": "output",
+                },
+                "outputDevices": [
+                    {"id": "output-device", "outputs": [{"id": "output"}]}
+                ],
+            }
+        elif method == "getChannels":
+            result = {"channels": [{"id": "channel"}]}
+        elif method == "getMixes":
+            result = {"mixes": [{"id": "mix"}]}
         elif method == "setPluginInfo":
             result = {}
         elif method in {
@@ -147,6 +170,43 @@ class WaveLinkObjectSchemaTests(unittest.TestCase):
             update.to_dict(),
             {"id": "channel", "isMuted": True, "level": 0.4},
         )
+
+    def test_channel_mix_accepts_id_and_mix_id_wire_shapes(self) -> None:
+        current = ChannelMix.from_dict({"id": "monitor", "level": 0.5})
+        documented = ChannelMix.from_dict({"mixId": "stream", "level": 0.7})
+
+        self.assertEqual(current.identifier, "monitor")
+        self.assertEqual(documented.identifier, "stream")
+        self.assertEqual(current.to_dict(), {"id": "monitor", "level": 0.5})
+        self.assertEqual(documented.to_dict(), {"mixId": "stream", "level": 0.7})
+
+    def test_hardware_metadata_is_typed_and_round_trips(self) -> None:
+        raw = {
+            "id": "wave-device",
+            "isWaveDevice": True,
+            "inputs": [
+                {
+                    "id": "microphone",
+                    "isGainLockOn": True,
+                    "micPcMix": {"value": 0.25, "isInverted": True},
+                    "effects": [
+                        {
+                            "id": "clipguard",
+                            "isEnabled": True,
+                            "isSupported": True,
+                        }
+                    ],
+                }
+            ],
+        }
+
+        device = InputDevice.from_dict(raw)
+
+        self.assertTrue(device.is_wave_device)
+        self.assertTrue(device.inputs[0].is_gain_lock_on)
+        self.assertTrue(device.inputs[0].mic_pc_mix.is_inverted)
+        self.assertTrue(device.inputs[0].effects[0].is_supported)
+        self.assertEqual(device.to_dict(), raw)
 
     def test_nested_schema_rejects_invalid_field_types(self) -> None:
         with self.assertRaisesRegex(WaveLinkSchemaError, r"mixes\[0\]\.level"):
@@ -235,6 +295,7 @@ class WaveLinkRpcWrapperTests(unittest.IsolatedAsyncioTestCase):
     ) -> None:
         await self.client.set_input_gain("device", "input", 1.5)
         await self.client.set_input_mic_pc_mix("device", "input", -1)
+        await self.client.set_input_gain_lock("device", "input", True)
         await self.client.set_input_effect_enabled(
             "device", "input", "clipguard", False, dsp=True
         )
@@ -253,6 +314,13 @@ class WaveLinkRpcWrapperTests(unittest.IsolatedAsyncioTestCase):
                     {
                         "id": "device",
                         "inputs": [{"id": "input", "micPcMix": {"value": 0.0}}],
+                    },
+                ),
+                call(
+                    "setInputDevice",
+                    {
+                        "id": "device",
+                        "inputs": [{"id": "input", "isGainLockOn": True}],
                     },
                 ),
                 call(
@@ -366,6 +434,18 @@ class WaveLinkRpcWrapperTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await self.client.subscribe_level_meter("all", "all")
 
+    async def test_disabling_meter_removes_only_matching_saved_subscription(
+        self,
+    ) -> None:
+        await self.client.subscribe_level_meter("channel", "all")
+        await self.client.subscribe_level_meter("mix", "all")
+        await self.client.subscribe_level_meter("channel", "all", False)
+
+        self.assertEqual(
+            list(self.client._desired_level_meter_subscriptions),
+            [("mix", "all", None)],
+        )
+
     async def test_channel_mix_does_not_retry_unrelated_rpc_errors(self) -> None:
         error = WaveLinkRpcError("device not found", code=-32004)
         self.client.call.side_effect = error
@@ -457,6 +537,113 @@ class WaveLinkTransportTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(handled.wait(), timeout=0.2)
 
         self.assertEqual(await client.call("stillAlive"), {"method": "stillAlive"})
+
+    async def test_typed_event_merges_cache_and_preserves_raw_handlers(self) -> None:
+        client, socket, _ = await self.connect_fake()
+        client._input_devices = [
+            InputDevice(
+                id="device",
+                name="Wave XLR",
+                inputs=[
+                    Input(
+                        id="microphone",
+                        name="Mic",
+                        gain=LevelValue(0.4),
+                        is_muted=False,
+                    )
+                ],
+            )
+        ]
+        typed_handled = asyncio.Event()
+        raw_handled = asyncio.Event()
+        received: list[InputDevice] = []
+
+        def typed_handler(event: object) -> None:
+            assert isinstance(event, InputDevice)
+            received.append(event)
+            typed_handled.set()
+
+        client.on_typed("inputDeviceChanged", typed_handler)  # type: ignore[arg-type]
+        client.on("inputDeviceChanged", lambda _: raw_handled.set())
+        await socket.notify(
+            "inputDeviceChanged",
+            {
+                "id": "device",
+                "inputs": [{"id": "microphone", "isMuted": True}],
+            },
+        )
+
+        await asyncio.wait_for(typed_handled.wait(), timeout=0.2)
+        await asyncio.wait_for(raw_handled.wait(), timeout=0.2)
+        cached = client.input_devices[0]
+        self.assertEqual(cached.name, "Wave XLR")
+        self.assertEqual(cached.inputs[0].name, "Mic")
+        self.assertEqual(cached.inputs[0].gain.value, 0.4)
+        self.assertTrue(cached.inputs[0].is_muted)
+        self.assertIs(received[0], cached)
+
+    async def test_level_meter_async_stream_is_typed_and_updates_cache(self) -> None:
+        client, socket, _ = await self.connect_fake()
+        stream = client.stream_level_meters(queue_size=2)
+        pending = asyncio.create_task(anext(stream))
+        await asyncio.sleep(0)
+
+        await socket.notify(
+            "levelMeterChanged",
+            {
+                "channels": [
+                    {
+                        "id": "microphone",
+                        "levelLeftPercentage": 25.0,
+                        "levelRightPercentage": 30.0,
+                    }
+                ]
+            },
+        )
+
+        event = await asyncio.wait_for(pending, timeout=0.2)
+        self.assertIsInstance(event, LevelMeterChanged)
+        self.assertEqual(event.channels[0].id, "microphone")
+        self.assertEqual(event.channels[0].level_right_percentage, 30.0)
+        self.assertIs(client.level_meters, event)
+        await stream.aclose()
+        self.assertNotIn("levelMeterChanged", client._typed_event_handlers)
+
+    async def test_focused_app_typed_event_updates_cache(self) -> None:
+        client, socket, _ = await self.connect_fake()
+        handled = asyncio.Event()
+
+        def handler(event: object) -> None:
+            assert isinstance(event, FocusedAppChanged)
+            handled.set()
+
+        client.on_typed("focusedAppChanged", handler)  # type: ignore[arg-type]
+        await socket.notify(
+            "focusedAppChanged",
+            {"id": "app", "name": "Player", "channel": {"id": "music"}},
+        )
+
+        await asyncio.wait_for(handled.wait(), timeout=0.2)
+        self.assertEqual(client.focused_app.name, "Player")
+        self.assertEqual(client.focused_app.channel.id, "music")
+
+    async def test_getters_populate_state_cache(self) -> None:
+        client = WaveLinkClient()
+        client.call = AsyncMock(  # type: ignore[method-assign]
+            side_effect=[
+                {"channels": [{"id": "microphone"}]},
+                {"mixes": [{"id": "monitor"}]},
+                {"inputDevices": [{"id": "wave"}]},
+            ]
+        )
+
+        await client.get_channels()
+        await client.get_mixes()
+        await client.get_input_devices()
+
+        self.assertEqual(client.channels[0].id, "microphone")
+        self.assertEqual(client.mixes[0].id, "monitor")
+        self.assertEqual(client.input_devices[0].id, "wave")
 
     async def test_rpc_timeout_cleans_pending_request(self) -> None:
         socket = FakeWaveLinkSocket(ignored_methods={"neverAnswers"})
@@ -668,6 +855,49 @@ class WaveLinkReconnectTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertIs(client.state, ConnectionState.CONNECTED)
             self.assertEqual(client.connected_port, 1884)
+            await client.close()
+
+    async def test_reconnect_restores_every_level_meter_subscription(self) -> None:
+        first_socket = FakeWaveLinkSocket()
+        second_socket = FakeWaveLinkSocket()
+        client = WaveLinkClient(reconnect_initial_delay=0.01)
+        client.discover_ports = Mock(return_value=[1884])  # type: ignore[method-assign]
+        connector = AsyncMock(side_effect=[first_socket, second_socket])
+
+        with patch("wavelink_core.websockets.connect", connector):
+            await client.connect()
+            await client.try_subscribe_level_meters()
+            await first_socket.remote_close()
+
+            async with asyncio.timeout(0.5):
+                while connector.await_count < 2:
+                    await asyncio.sleep(0)
+                await client.wait_until_connected()
+
+            restored = [
+                payload["params"]
+                for payload in second_socket.sent
+                if payload["method"] == "setSubscription"
+            ]
+            self.assertEqual(
+                restored,
+                [{"focusedAppChanged": {"isEnabled": True}}]
+                + [
+                    {
+                        "levelMeterChanged": {
+                            "type": meter_type,
+                            "id": target_id,
+                            "isEnabled": True,
+                        }
+                    }
+                    for meter_type, target_id in (
+                        ("input", "input"),
+                        ("output", "output"),
+                        ("channel", "channel"),
+                        ("mix", "mix"),
+                    )
+                ],
+            )
             await client.close()
 
     async def test_reconnect_retries_after_failed_attempt(self) -> None:

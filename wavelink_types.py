@@ -95,9 +95,7 @@ def _coerce_value(
         errors: list[WaveLinkSchemaError] = []
         for option in args:
             try:
-                return _coerce_value(
-                    option, value, path, parse_models=parse_models
-                )
+                return _coerce_value(option, value, path, parse_models=parse_models)
             except WaveLinkSchemaError as exc:
                 errors.append(exc)
         raise WaveLinkSchemaError(
@@ -155,8 +153,7 @@ def _coerce_value(
         if parse_models and isinstance(value, Mapping):
             return expected.from_dict(value, path=path)
         raise WaveLinkSchemaError(
-            f"{path} must be {_type_name(expected)}, "
-            f"got {type(value).__name__}"
+            f"{path} must be {_type_name(expected)}, got {type(value).__name__}"
         )
 
     if expected is bool:
@@ -269,8 +266,7 @@ class JsonModel:
     def from_dict(cls, value: Mapping[str, Any], *, path: str = "") -> Self:
         if not isinstance(value, Mapping):
             raise WaveLinkSchemaError(
-                f"{path or cls.__name__} must be an object, "
-                f"got {type(value).__name__}"
+                f"{path or cls.__name__} must be an object, got {type(value).__name__}"
             )
 
         hints = _schema_hints(cls)
@@ -316,9 +312,7 @@ class JsonModel:
             if converted is None:
                 continue
             json_name = model_field.metadata.get("json_name", model_field.name)
-            result[json_name] = _encode_value(
-                expected, converted, json_name
-            )
+            result[json_name] = _encode_value(expected, converted, json_name)
         return result
 
 
@@ -353,12 +347,28 @@ class Application(IdentifiedObject):
 class Effect(IdentifiedObject):
     name: str | None = None
     is_enabled: bool | None = _json_field("isEnabled", default=None)
+    is_supported: bool | None = _json_field("isSupported", default=None)
 
 
 @dataclass(slots=True)
-class ChannelMix(IdentifiedObject):
+class ChannelMix(JsonModel):
+    id: str | None = None
+    mix_id: str | None = _json_field("mixId", default=None)
     level: float | None = None
     is_muted: bool | None = _json_field("isMuted", default=None)
+
+    def _validate_model(self) -> None:
+        if self.id is None and self.mix_id is None:
+            raise WaveLinkSchemaError("ChannelMix requires id or mixId")
+
+    @property
+    def identifier(self) -> str:
+        """Return the mix identifier for either known Wave Link wire shape."""
+        if self.id is not None:
+            return self.id
+        if self.mix_id is not None:
+            return self.mix_id
+        raise WaveLinkSchemaError("ChannelMix requires id or mixId")
 
 
 @dataclass(slots=True)
@@ -387,6 +397,7 @@ class LevelValue(JsonModel):
     min: float | None = None
     max: float | None = None
     look_up_table: list[JsonValue] | None = _json_field("lookUpTable", default=None)
+    is_inverted: bool | None = _json_field("isInverted", default=None)
 
 
 @dataclass(slots=True)
@@ -395,6 +406,7 @@ class Input(IdentifiedObject):
     gain: LevelValue | None = None
     mic_pc_mix: LevelValue | None = _json_field("micPcMix", default=None)
     is_muted: bool | None = _json_field("isMuted", default=None)
+    is_gain_lock_on: bool | None = _json_field("isGainLockOn", default=None)
     effects: list[Effect] | None = None
     dsp_effects: list[Effect] | None = _json_field("dspEffects", default=None)
 
@@ -403,6 +415,7 @@ class Input(IdentifiedObject):
 class InputDevice(IdentifiedObject):
     name: str | None = None
     device_type: str | None = _json_field("deviceType", default=None)
+    is_wave_device: bool | None = _json_field("isWaveDevice", default=None)
     inputs: list[Input] | None = None
 
 
@@ -418,6 +431,7 @@ class Output(IdentifiedObject):
 class OutputDevice(IdentifiedObject):
     name: str | None = None
     device_type: str | None = _json_field("deviceType", default=None)
+    is_wave_device: bool | None = _json_field("isWaveDevice", default=None)
     outputs: list[Output] | None = None
 
 
@@ -443,6 +457,7 @@ class InputUpdate(IdentifiedObject):
     gain: LevelValue | None = None
     mic_pc_mix: LevelValue | None = _json_field("micPcMix", default=None)
     is_muted: bool | None = _json_field("isMuted", default=None)
+    is_gain_lock_on: bool | None = _json_field("isGainLockOn", default=None)
     effects: list[EffectUpdate] | None = None
     dsp_effects: list[EffectUpdate] | None = _json_field("dspEffects", default=None)
 
@@ -493,9 +508,7 @@ class OutputDeviceUpdate(IdentifiedObject):
 @dataclass(slots=True)
 class SetOutputDeviceParams(JsonModel):
     main_output: MainOutput | None = _json_field("mainOutput", default=None)
-    output_device: OutputDeviceUpdate | None = _json_field(
-        "outputDevice", default=None
-    )
+    output_device: OutputDeviceUpdate | None = _json_field("outputDevice", default=None)
 
     def _validate_model(self) -> None:
         if self.main_output is None and self.output_device is None:
@@ -543,6 +556,42 @@ class SubscriptionUpdate(JsonModel):
             raise WaveLinkSchemaError("SubscriptionUpdate requires a subscription")
 
 
+@dataclass(slots=True)
+class FocusedAppChannel(JsonModel):
+    id: str
+
+
+@dataclass(slots=True)
+class FocusedAppChanged(IdentifiedObject):
+    name: str | None = None
+    channel: FocusedAppChannel | None = None
+
+
+@dataclass(slots=True)
+class MeterEntry(IdentifiedObject):
+    sub_id: str | None = _json_field("subId", default=None)
+    level_left_percentage: float | None = _json_field(
+        "levelLeftPercentage", default=None
+    )
+    level_right_percentage: float | None = _json_field(
+        "levelRightPercentage", default=None
+    )
+
+
+@dataclass(slots=True)
+class LevelMeterChanged(JsonModel):
+    input_devices: list[MeterEntry] | None = _json_field("inputDevices", default=None)
+    output_devices: list[MeterEntry] | None = _json_field("outputDevices", default=None)
+    channels: list[MeterEntry] | None = None
+    mixes: list[MeterEntry] | None = None
+
+
+@dataclass(slots=True)
+class CreateProfileRequested(JsonModel):
+    device_type: str | None = _json_field("deviceType", default=None)
+    mixes: list[str] | None = None
+
+
 __all__ = [
     "Application",
     "ApplicationInfo",
@@ -552,6 +601,9 @@ __all__ = [
     "ChannelUpdate",
     "Effect",
     "EffectUpdate",
+    "CreateProfileRequested",
+    "FocusedAppChanged",
+    "FocusedAppChannel",
     "FocusedAppSubscription",
     "IdentifiedObject",
     "ImageInfo",
@@ -563,8 +615,10 @@ __all__ = [
     "JsonScalar",
     "JsonValue",
     "LevelMeterSubscription",
+    "LevelMeterChanged",
     "LevelMeterType",
     "LevelValue",
+    "MeterEntry",
     "MainOutput",
     "Mix",
     "MixUpdate",
