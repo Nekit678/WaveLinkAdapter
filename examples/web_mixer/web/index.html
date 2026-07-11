@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+    <meta name="theme-color" content="#11151a">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>WaveLink Console Example</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="stylesheet" href="/styles.css">
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand" aria-label="WaveLink Console">
+          <span class="brand-mark" aria-hidden="true">
+            <i></i><i></i><i></i><i></i>
+          </span>
+          <span class="brand-copy">
+            <strong>WAVELINK</strong>
+            <small>TOUCH CONSOLE</small>
+          </span>
+        </div>
+
+        <div class="console-readout" aria-live="polite">
+          <span class="readout-label">ACTIVE MIX</span>
+          <strong id="active-mix-readout">—</strong>
+        </div>
+
+        <div class="topbar-actions">
+          <button class="status-pill is-connecting" id="connection-button" type="button" aria-haspopup="dialog">
+            <span class="status-light" aria-hidden="true"></span>
+            <span id="connection-label">Подключение</span>
+          </button>
+          <button class="icon-button" id="refresh-button" type="button" aria-label="Обновить состояние" title="Обновить состояние">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.34 5.66M20 4v7h-7"/></svg>
+          </button>
+          <button class="icon-button" id="settings-button" type="button" aria-label="Настройки подключения" title="Настройки">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.09A1.7 1.7 0 0 0 8.55 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3v-4h.09A1.7 1.7 0 0 0 4.6 8.55a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3h4v.09A1.7 1.7 0 0 0 15.45 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.12.4.35.74.68 1 .3.25.7.4 1.1.4H21v4h-.09A1.7 1.7 0 0 0 19.4 15Z"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <section class="mix-toolbar" aria-label="Выбор микса">
+        <div class="mix-tabs" id="mix-tabs" role="tablist" aria-label="Миксы">
+          <span class="toolbar-placeholder">Загрузка миксов…</span>
+        </div>
+        <div class="toolbar-divider"></div>
+        <label class="output-select-wrap" title="Главный выход">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 14v-4a8 8 0 0 1 16 0v4"/><path d="M18 19h1a2 2 0 0 0 2-2v-3h-4v5h1ZM6 19H5a2 2 0 0 1-2-2v-3h4v5H6Z"/></svg>
+          <span>OUTPUT</span>
+          <select id="output-select" aria-label="Главный выход" disabled>
+            <option>Не найден</option>
+          </select>
+        </label>
+        <nav class="console-tools" aria-label="Дополнительные секции микшера">
+          <button class="tool-button" id="inputs-button" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="13" rx="4"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6"/></svg>
+            <span>INPUTS</span>
+          </button>
+          <button class="tool-button" id="routing-button" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5v14M5 8h6a4 4 0 0 1 4 4v7M12 16l3 3 3-3"/></svg>
+            <span>ROUTING</span>
+          </button>
+          <button class="tool-button" id="apps-button" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="4"/><path d="M8 8h3v3H8zM13 8h3v3h-3zM8 13h3v3H8zM13 13h3v3h-3z"/></svg>
+            <span>APPS</span>
+          </button>
+        </nav>
+      </section>
+
+      <main class="console" id="console">
+        <section class="empty-state" id="empty-state">
+          <div class="empty-visual" aria-hidden="true"><span></span><span></span><span></span></div>
+          <h1>Подключаемся к Wave Link</h1>
+          <p>Запустите Wave Link и оставьте эту страницу открытой — консоль появится автоматически.</p>
+          <button class="primary-button" id="empty-settings-button" type="button">Проверить адрес сервера</button>
+        </section>
+        <div class="channel-bank" id="channel-bank" aria-label="Каналы микшера" hidden></div>
+      </main>
+
+      <footer class="statusbar">
+        <span><i class="mini-led" id="footer-led"></i><span id="footer-status">Сервер недоступен</span></span>
+        <span id="channel-count">0 каналов</span>
+        <span class="statusbar-hint">Коснитесь шкалы или тяните фейдер</span>
+      </footer>
+    </div>
+
+    <dialog class="settings-dialog" id="settings-dialog">
+      <form method="dialog" id="settings-form">
+        <div class="dialog-heading">
+          <div>
+            <span class="eyebrow">CONNECTION</span>
+            <h2>Настройки сервера</h2>
+          </div>
+          <button class="dialog-close" value="cancel" aria-label="Закрыть" type="submit">×</button>
+        </div>
+        <label class="field">
+          <span>WebSocket адрес</span>
+          <input id="server-url" name="serverUrl" type="url" inputmode="url" autocomplete="url" placeholder="ws://192.168.1.20:8765" required>
+          <small>Для планшета укажите IP-адрес компьютера с Wave Link.</small>
+        </label>
+        <label class="switch-row">
+          <span><strong>Автоподключение</strong><small>Повторять попытку после обрыва связи</small></span>
+          <input id="auto-reconnect" type="checkbox" checked>
+          <i aria-hidden="true"></i>
+        </label>
+        <div class="system-card" id="system-info">
+          <span><small>WAVE LINK</small><strong id="info-version">—</strong></span>
+          <span><small>INTERFACE</small><strong id="info-interface">—</strong></span>
+          <span><small>PLATFORM</small><strong id="info-platform">—</strong></span>
+        </div>
+        <label class="field advanced-field">
+          <span>Устройства плагина</span>
+          <input id="plugin-devices" type="text" placeholder="StreamDeck, StreamDeckPlus">
+          <small>Необязательно: семейства подключённых Stream Deck для метода setPluginInfo.</small>
+        </label>
+        <div class="dialog-actions">
+          <button class="secondary-button" id="reset-url-button" type="button">Адрес по умолчанию</button>
+          <button class="primary-button" id="connect-button" value="default" type="submit">Подключиться</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="panel-dialog" id="inputs-dialog">
+      <div class="panel-shell">
+        <header class="panel-heading">
+          <div><span class="eyebrow">HARDWARE</span><h2>Входы и микрофон</h2></div>
+          <button class="dialog-close" data-close-dialog="inputs-dialog" aria-label="Закрыть" type="button">×</button>
+        </header>
+        <div class="device-grid" id="inputs-panel"></div>
+      </div>
+    </dialog>
+
+    <dialog class="panel-dialog" id="routing-dialog">
+      <div class="panel-shell">
+        <header class="panel-heading">
+          <div><span class="eyebrow">OUTPUT BUS</span><h2>Выходы и маршрутизация</h2></div>
+          <button class="dialog-close" data-close-dialog="routing-dialog" aria-label="Закрыть" type="button">×</button>
+        </header>
+        <div class="device-grid" id="outputs-panel"></div>
+      </div>
+    </dialog>
+
+    <dialog class="panel-dialog app-dialog" id="apps-dialog">
+      <div class="panel-shell">
+        <header class="panel-heading">
+          <div><span class="eyebrow">APPLICATION ROUTING</span><h2>Приложения</h2></div>
+          <button class="dialog-close" data-close-dialog="apps-dialog" aria-label="Закрыть" type="button">×</button>
+        </header>
+        <section class="focused-app-card" id="focused-app-card">
+          <span class="app-glyph" aria-hidden="true">APP</span>
+          <div><small>АКТИВНОЕ ПРИЛОЖЕНИЕ</small><strong id="focused-app-name">Не определено</strong><span id="focused-app-channel">Канал не назначен</span></div>
+        </section>
+        <form class="route-app-form" id="route-app-form">
+          <label class="field"><span>Приложение</span><select id="application-select" required></select></label>
+          <label class="field"><span>Назначить каналу</span><select id="application-channel-select" required></select></label>
+          <button class="primary-button" type="submit">Назначить</button>
+        </form>
+      </div>
+    </dialog>
+
+    <dialog class="panel-dialog app-dialog" id="channel-dialog">
+      <div class="panel-shell">
+        <header class="panel-heading">
+          <div><span class="eyebrow">CHANNEL SOURCE</span><h2 id="channel-dialog-name">Канал</h2></div>
+          <button class="dialog-close" data-close-dialog="channel-dialog" aria-label="Закрыть" type="button">×</button>
+        </header>
+        <div id="channel-inspector"></div>
+      </div>
+    </dialog>
+
+    <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
+
+    <template id="channel-template">
+      <article class="channel-strip">
+        <div class="strip-topline"><span class="channel-number"></span><span class="signal-led" aria-label="Сигнал"></span></div>
+        <button class="channel-identity" type="button" aria-label="Открыть параметры канала">
+          <span class="channel-icon" aria-hidden="true"></span>
+          <span class="channel-name"></span>
+          <small class="channel-type"></small>
+        </button>
+        <div class="effect-rack" aria-label="Эффекты"></div>
+        <div class="fader-section">
+          <div class="meter stereo-meter" aria-label="Уровень сигнала, левый и правый каналы">
+            <i class="meter-fill" aria-hidden="true"></i>
+            <i class="meter-fill right" aria-hidden="true"></i>
+            <i class="meter-peak" aria-hidden="true"></i>
+          </div>
+          <div class="scale" aria-hidden="true">
+            <span style="--p:0">+6</span><span style="--p:18">0</span><span style="--p:39">−10</span><span style="--p:61">−20</span><span style="--p:82">−40</span><span style="--p:100">−∞</span>
+          </div>
+          <div class="fader" role="slider" tabindex="0" aria-orientation="vertical" aria-valuemin="0" aria-valuemax="100">
+            <div class="fader-track"><i class="fader-progress"></i></div>
+            <div class="fader-cap"><i></i><i></i><i></i></div>
+          </div>
+        </div>
+        <output class="level-readout">−∞ <small>dB</small></output>
+        <button class="mute-button" type="button" aria-pressed="false"><span>MUTE</span><small>M</small></button>
+      </article>
+    </template>
+
+    <template id="master-template">
+      <article class="channel-strip master-strip">
+        <div class="strip-topline"><span class="channel-number">MASTER</span><span class="signal-led" aria-label="Сигнал"></span></div>
+        <div class="channel-identity">
+          <span class="channel-icon master-icon" aria-hidden="true"></span>
+          <span class="channel-name">Main Mix</span>
+          <small class="channel-type">OUTPUT BUS</small>
+        </div>
+        <div class="master-badge">MAIN</div>
+        <div class="fader-section">
+          <div class="meter stereo-meter" aria-label="Уровень мастера"><i class="meter-fill"></i><i class="meter-fill right"></i><i class="meter-peak"></i></div>
+          <div class="scale" aria-hidden="true">
+            <span style="--p:0">+6</span><span style="--p:18">0</span><span style="--p:39">−10</span><span style="--p:61">−20</span><span style="--p:82">−40</span><span style="--p:100">−∞</span>
+          </div>
+          <div class="fader" role="slider" tabindex="0" aria-orientation="vertical" aria-valuemin="0" aria-valuemax="100">
+            <div class="fader-track"><i class="fader-progress"></i></div>
+            <div class="fader-cap"><i></i><i></i><i></i></div>
+          </div>
+        </div>
+        <output class="level-readout">−∞ <small>dB</small></output>
+        <button class="mute-button" type="button" aria-pressed="false"><span>MUTE</span><small>M</small></button>
+      </article>
+    </template>
+  </body>
+</html>

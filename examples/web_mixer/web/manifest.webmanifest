@@ -1,0 +1,11 @@
+{
+  "name": "WaveLink Touch Console Example",
+  "short_name": "WaveLink",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#11151a",
+  "theme_color": "#11151a",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
