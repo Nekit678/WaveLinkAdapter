@@ -14,6 +14,17 @@ from wavelink_core import (
     WaveLinkTimeoutError,
     clamp01,
 )
+from wavelink_types import (
+    Channel,
+    ChannelMix,
+    ChannelUpdate,
+    Effect,
+    InputUpdate,
+    MainOutput,
+    OutputDevices,
+    SetOutputDeviceParams,
+    WaveLinkSchemaError,
+)
 
 
 _CLOSE = object()
@@ -106,6 +117,53 @@ class FakeWaveLinkSocket:
         )
 
 
+class WaveLinkObjectSchemaTests(unittest.TestCase):
+    def test_nested_response_supports_attributes_and_json_round_trip(self) -> None:
+        raw = {
+            "id": "microphone",
+            "name": "Mic",
+            "level": 0.75,
+            "isMuted": False,
+            "mixes": [{"id": "monitor", "level": 0.5}],
+            "effects": [{"id": "noise-removal", "isEnabled": True}],
+            "vendorField": {"revision": 3},
+        }
+
+        channel = Channel.from_dict(raw)
+
+        self.assertEqual(channel.id, "microphone")
+        self.assertEqual(channel.name, "Mic")
+        self.assertIsInstance(channel.mixes[0], ChannelMix)
+        self.assertEqual(channel.mixes[0].level, 0.5)
+        self.assertIsInstance(channel.effects[0], Effect)
+        self.assertTrue(channel.effects[0].is_enabled)
+        self.assertEqual(channel.extra, {"vendorField": {"revision": 3}})
+        self.assertEqual(channel.to_dict(), raw)
+
+    def test_update_schema_uses_attributes_and_json_names(self) -> None:
+        update = ChannelUpdate(id="channel", is_muted=True, level=0.4)
+
+        self.assertEqual(
+            update.to_dict(),
+            {"id": "channel", "isMuted": True, "level": 0.4},
+        )
+
+    def test_nested_schema_rejects_invalid_field_types(self) -> None:
+        with self.assertRaisesRegex(WaveLinkSchemaError, r"mixes\[0\]\.level"):
+            Channel.from_dict(
+                {"id": "channel", "mixes": [{"id": "mix", "level": "loud"}]}
+            )
+
+        with self.assertRaisesRegex(WaveLinkSchemaError, r"id must be str"):
+            Channel(id=None)  # type: ignore[arg-type]
+
+        with self.assertRaisesRegex(WaveLinkSchemaError, r"mixes\[0\].*ChannelMix"):
+            Channel(  # type: ignore[list-item]
+                id="channel",
+                mixes=[{"id": "mix"}],
+            )
+
+
 class WaveLinkRpcWrapperTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.client = WaveLinkClient()
@@ -127,9 +185,16 @@ class WaveLinkRpcWrapperTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_missing_top_level_methods_use_documented_payloads(self) -> None:
         await self.client.set_plugin_info(["SD", "SDPlus"])
-        await self.client.set_input_device("device", [{"id": "input", "isMuted": True}])
+        await self.client.set_input_device(
+            "device", [InputUpdate(id="input", is_muted=True)]
+        )
         await self.client.set_output_device(
-            {"mainOutput": {"outputDeviceId": "device", "outputId": "output"}}
+            SetOutputDeviceParams(
+                main_output=MainOutput(
+                    output_device_id="device",
+                    output_id="output",
+                )
+            )
         )
         await self.client.add_to_channel("app", "channel")
 
@@ -152,6 +217,18 @@ class WaveLinkRpcWrapperTests(unittest.IsolatedAsyncioTestCase):
                 call("addToChannel", {"appId": "app", "channelId": "channel"}),
             ]
         )
+
+    async def test_setters_reject_legacy_dictionary_arguments(self) -> None:
+        with self.assertRaisesRegex(TypeError, "InputUpdate"):
+            await self.client.set_input_device(
+                "device",
+                [{"id": "input"}],  # type: ignore[list-item]
+            )
+
+        with self.assertRaisesRegex(TypeError, "ChannelUpdate"):
+            await self.client.set_channel(  # type: ignore[arg-type]
+                {"id": "channel", "isMuted": True}
+            )
 
     async def test_input_convenience_methods_clamp_and_select_effect_collection(
         self,
@@ -501,7 +578,7 @@ class WaveLinkTransportTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(WaveLinkProtocolError, "mainOutput"):
             await client.get_output_devices()
 
-    async def test_valid_typed_response_remains_a_plain_dictionary(self) -> None:
+    async def test_valid_response_becomes_nested_object_schema(self) -> None:
         client = WaveLinkClient()
         response = {
             "mainOutput": {"outputDeviceId": "device", "outputId": "output"},
@@ -509,7 +586,13 @@ class WaveLinkTransportTests(unittest.IsolatedAsyncioTestCase):
         }
         client.call = AsyncMock(return_value=response)  # type: ignore[method-assign]
 
-        self.assertIs(await client.get_output_devices(), response)
+        state = await client.get_output_devices()
+
+        self.assertIsInstance(state, OutputDevices)
+        self.assertEqual(state.main_output.output_device_id, "device")
+        self.assertEqual(state.output_devices[0].id, "device")
+        self.assertEqual(state.output_devices[0].extra, {"vendorField": 42})
+        self.assertEqual(state.to_dict(), response)
 
     async def test_mutation_response_must_be_an_object(self) -> None:
         client = WaveLinkClient()

@@ -17,7 +17,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
-from typing import Any, AsyncIterator, Awaitable, Callable, Protocol, cast
+from typing import Any, AsyncIterator, Awaitable, Callable, Protocol, TypeVar
 
 import websockets
 from websockets.typing import Origin
@@ -25,14 +25,18 @@ from websockets.typing import Origin
 from wavelink_types import (
     ApplicationInfo,
     Channel,
+    ChannelMixUpdate,
     ChannelUpdate,
     EffectUpdate,
+    FocusedAppSubscription,
     InputDevice,
     InputDeviceUpdate,
     InputUpdate,
+    JsonModel,
     JsonValue,
     LevelMeterSubscription,
     LevelMeterType,
+    LevelValue,
     MainOutput,
     Mix,
     MixUpdate,
@@ -44,6 +48,7 @@ from wavelink_types import (
     PluginInfoResult,
     SetOutputDeviceParams,
     SubscriptionUpdate,
+    WaveLinkSchemaError,
 )
 
 
@@ -336,13 +341,13 @@ class WaveLinkClient:
                         )
 
                         app = await self._get_application_info(allow_connecting=True)
-                        if app.get("appID") != "EWL":
+                        if app.app_id != "EWL":
                             raise WaveLinkProtocolError(
                                 f"Connected to unexpected app: {app!r}"
                             )
                         try:
-                            interface_revision = int(app["interfaceRevision"])
-                        except (KeyError, TypeError, ValueError) as exc:
+                            interface_revision = int(app.interface_revision)
+                        except (TypeError, ValueError) as exc:
                             raise WaveLinkProtocolError(
                                 "Wave Link did not report a valid interface revision: "
                                 f"{app!r}"
@@ -812,65 +817,25 @@ class WaveLinkClient:
         result = await self._call(
             "getApplicationInfo", None, allow_connecting=allow_connecting
         )
-        info = expect_object(result, "getApplicationInfo")
-        expect_fields(
-            info,
-            {"appID": str, "interfaceRevision": (int, str)},
-            "getApplicationInfo",
-        )
-        return cast(ApplicationInfo, info)
+        return parse_schema(result, ApplicationInfo, "getApplicationInfo")
 
     async def get_channels(self) -> list[Channel]:
         result = await self.call("getChannels", None)
-        return cast(
-            list[Channel],
-            expect_object_list(
-                result, "channels", "getChannels", required_fields={"id": str}
-            ),
-        )
+        return parse_schema_list(result, "channels", Channel, "getChannels")
 
     async def get_mixes(self) -> list[Mix]:
         result = await self.call("getMixes", None)
-        return cast(
-            list[Mix],
-            expect_object_list(
-                result, "mixes", "getMixes", required_fields={"id": str}
-            ),
-        )
+        return parse_schema_list(result, "mixes", Mix, "getMixes")
 
     async def get_input_devices(self) -> list[InputDevice]:
         result = await self.call("getInputDevices", None)
-        return cast(
-            list[InputDevice],
-            expect_object_list(
-                result,
-                "inputDevices",
-                "getInputDevices",
-                required_fields={"id": str},
-            ),
+        return parse_schema_list(
+            result, "inputDevices", InputDevice, "getInputDevices"
         )
 
     async def get_output_devices(self) -> OutputDevices:
         result = await self.call("getOutputDevices", None)
-        output_devices = expect_object(result, "getOutputDevices")
-        expect_object_list(
-            output_devices,
-            "outputDevices",
-            "getOutputDevices",
-            required_fields={"id": str},
-        )
-        main_output = output_devices.get("mainOutput")
-        if not isinstance(main_output, dict):
-            raise WaveLinkProtocolError(
-                "getOutputDevices returned an invalid 'mainOutput' object"
-            )
-        expect_fields(
-            main_output,
-            {"outputDeviceId": str, "outputId": str},
-            "getOutputDevices",
-            path="mainOutput",
-        )
-        return cast(OutputDevices, output_devices)
+        return parse_schema(result, OutputDevices, "getOutputDevices")
 
     async def set_plugin_info(self, connected_devices: list[str]) -> PluginInfoResult:
         """Сообщить Wave Link семейства подключённых устройств Stream Deck."""
@@ -880,31 +845,30 @@ class WaveLinkClient:
             {"connectedDevices": devices},
         )
         self._plugin_devices = devices
-        return cast(PluginInfoResult, expect_object(result, "setPluginInfo"))
+        return parse_schema(result, PluginInfoResult, "setPluginInfo")
 
     async def set_input_device(
-        self, device_id: str, inputs: list[InputUpdate]
+        self,
+        device_id: str,
+        inputs: list[InputUpdate],
     ) -> InputDeviceUpdate:
         """Обновить один или несколько входов указанного входного устройства."""
+        for index, item in enumerate(inputs):
+            if not isinstance(item, InputUpdate):
+                raise TypeError(f"inputs[{index}] must be InputUpdate")
+        payload = InputDeviceUpdate(id=str(device_id), inputs=list(inputs))
         result = await self.call(
             "setInputDevice",
-            {"id": str(device_id), "inputs": [dict(item) for item in inputs]},
+            payload.to_dict(),
         )
-        update = expect_object(result, "setInputDevice")
-        expect_fields(update, {"id": str}, "setInputDevice")
-        expect_object_list(
-            update,
-            "inputs",
-            "setInputDevice",
-            required_fields={"id": str},
-        )
-        return cast(InputDeviceUpdate, update)
+        return parse_schema(result, InputDeviceUpdate, "setInputDevice")
 
     async def set_input_mute(
         self, device_id: str, input_id: str, muted: bool
     ) -> InputDeviceUpdate:
         return await self.set_input_device(
-            device_id, [{"id": str(input_id), "isMuted": bool(muted)}]
+            device_id,
+            [InputUpdate(id=str(input_id), is_muted=bool(muted))],
         )
 
     async def set_input_gain(
@@ -912,7 +876,7 @@ class WaveLinkClient:
     ) -> InputDeviceUpdate:
         return await self.set_input_device(
             device_id,
-            [{"id": str(input_id), "gain": {"value": clamp01(value)}}],
+            [InputUpdate(id=str(input_id), gain=LevelValue(clamp01(value)))],
         )
 
     async def set_input_mic_pc_mix(
@@ -920,7 +884,12 @@ class WaveLinkClient:
     ) -> InputDeviceUpdate:
         return await self.set_input_device(
             device_id,
-            [{"id": str(input_id), "micPcMix": {"value": clamp01(value)}}],
+            [
+                InputUpdate(
+                    id=str(input_id),
+                    mic_pc_mix=LevelValue(clamp01(value)),
+                )
+            ],
         )
 
     async def set_input_effect_enabled(
@@ -933,34 +902,33 @@ class WaveLinkClient:
         dsp: bool = False,
     ) -> InputDeviceUpdate:
         """Включить программный либо аппаратный/DSP-эффект входа."""
-        effect: EffectUpdate = {
-            "id": str(effect_id),
-            "isEnabled": bool(enabled),
-        }
-        update: InputUpdate = {"id": str(input_id)}
+        effect = EffectUpdate(id=str(effect_id), is_enabled=bool(enabled))
+        update = InputUpdate(id=str(input_id))
         if dsp:
-            update["dspEffects"] = [effect]
+            update.dsp_effects = [effect]
         else:
-            update["effects"] = [effect]
+            update.effects = [effect]
         return await self.set_input_device(device_id, [update])
 
     async def set_output_device(
         self, params: OutputDeviceUpdateParams
     ) -> OutputDeviceUpdateResult:
         """Отправить документированную структуру параметров ``setOutputDevice``."""
-        result = await self.call("setOutputDevice", dict(params))
-        return cast(OutputDeviceUpdateResult, expect_output_device_result(result))
+        if not isinstance(
+            params, (SetOutputDeviceParams, MainOutput, OutputDeviceUpdate)
+        ):
+            raise TypeError("params must be an output-device update schema")
+        result = await self.call("setOutputDevice", params.to_dict())
+        return parse_output_device_result(result)
 
     async def set_main_output(
         self, output_device_id: str, output_id: str = ""
     ) -> OutputDeviceUpdateResult:
-        main_output: MainOutput = {
-            "outputDeviceId": str(output_device_id),
-            "outputId": str(output_id),
-        }
-        payload: SetOutputDeviceParams = {
-            "mainOutput": main_output,
-        }
+        main_output = MainOutput(
+            output_device_id=str(output_device_id),
+            output_id=str(output_id),
+        )
+        payload = SetOutputDeviceParams(main_output=main_output)
         try:
             return await self.set_output_device(payload)
         except WaveLinkRpcError as exc:
@@ -979,21 +947,19 @@ class WaveLinkClient:
         muted: bool | None = None,
         mix_id: str | None = None,
     ) -> OutputDeviceUpdateResult:
-        output: OutputUpdate = {"id": str(output_id)}
+        output = OutputUpdate(id=str(output_id))
         if level is not None:
-            output["level"] = clamp01(level)
+            output.level = clamp01(level)
         if muted is not None:
-            output["isMuted"] = bool(muted)
+            output.is_muted = bool(muted)
         if mix_id is not None:
-            output["mixId"] = str(mix_id)
+            output.mix_id = str(mix_id)
 
-        output_device: OutputDeviceUpdate = {
-            "id": str(output_device_id),
-            "outputs": [output],
-        }
-        documented: SetOutputDeviceParams = {
-            "outputDevice": output_device,
-        }
+        output_device = OutputDeviceUpdate(
+            id=str(output_device_id),
+            outputs=[output],
+        )
+        documented = SetOutputDeviceParams(output_device=output_device)
         try:
             return await self.set_output_device(documented)
         except WaveLinkRpcError as exc:
@@ -1024,16 +990,20 @@ class WaveLinkClient:
 
     async def set_channel(self, params: ChannelUpdate) -> ChannelUpdate:
         """Обновить любой поддерживаемый набор свойств канала."""
-        result = await self.call("setChannel", dict(params))
-        update = expect_object(result, "setChannel")
-        expect_fields(update, {"id": str}, "setChannel")
-        return cast(ChannelUpdate, update)
+        if not isinstance(params, ChannelUpdate):
+            raise TypeError("params must be ChannelUpdate")
+        result = await self.call("setChannel", params.to_dict())
+        return parse_schema(result, ChannelUpdate, "setChannel")
 
     async def set_channel_level(self, channel_id: str, level: float) -> ChannelUpdate:
-        return await self.set_channel({"id": str(channel_id), "level": clamp01(level)})
+        return await self.set_channel(
+            ChannelUpdate(id=str(channel_id), level=clamp01(level))
+        )
 
     async def set_channel_mute(self, channel_id: str, muted: bool) -> ChannelUpdate:
-        return await self.set_channel({"id": str(channel_id), "isMuted": bool(muted)})
+        return await self.set_channel(
+            ChannelUpdate(id=str(channel_id), is_muted=bool(muted))
+        )
 
     async def set_channel_mix_level(
         self, channel_id: str, mix_id: str, level: float
@@ -1041,19 +1011,25 @@ class WaveLinkClient:
         """Задать уровень канала в миксе с поддержкой обеих известных форм ID."""
         try:
             return await self.set_channel(
-                {
-                    "id": str(channel_id),
-                    "mixes": [{"id": str(mix_id), "level": clamp01(level)}],
-                },
+                ChannelUpdate(
+                    id=str(channel_id),
+                    mixes=[
+                        ChannelMixUpdate(id=str(mix_id), level=clamp01(level))
+                    ],
+                )
             )
         except WaveLinkRpcError as exc:
             if not exc.is_invalid_params:
                 raise
             return await self.set_channel(
-                {
-                    "id": str(channel_id),
-                    "mixes": [{"mixId": str(mix_id), "level": clamp01(level)}],
-                },
+                ChannelUpdate(
+                    id=str(channel_id),
+                    mixes=[
+                        ChannelMixUpdate(
+                            mix_id=str(mix_id), level=clamp01(level)
+                        )
+                    ],
+                )
             )
 
     async def set_channel_mix_mute(
@@ -1062,43 +1038,51 @@ class WaveLinkClient:
         """Заглушить канал в миксе с поддержкой обеих известных форм ID."""
         try:
             return await self.set_channel(
-                {
-                    "id": str(channel_id),
-                    "mixes": [{"id": str(mix_id), "isMuted": bool(muted)}],
-                },
+                ChannelUpdate(
+                    id=str(channel_id),
+                    mixes=[
+                        ChannelMixUpdate(id=str(mix_id), is_muted=bool(muted))
+                    ],
+                )
             )
         except WaveLinkRpcError as exc:
             if not exc.is_invalid_params:
                 raise
             return await self.set_channel(
-                {
-                    "id": str(channel_id),
-                    "mixes": [{"mixId": str(mix_id), "isMuted": bool(muted)}],
-                },
+                ChannelUpdate(
+                    id=str(channel_id),
+                    mixes=[
+                        ChannelMixUpdate(
+                            mix_id=str(mix_id), is_muted=bool(muted)
+                        )
+                    ],
+                )
             )
 
     async def set_channel_effect_enabled(
         self, channel_id: str, effect_id: str, enabled: bool
     ) -> ChannelUpdate:
         return await self.set_channel(
-            {
-                "id": str(channel_id),
-                "effects": [{"id": str(effect_id), "isEnabled": bool(enabled)}],
-            }
+            ChannelUpdate(
+                id=str(channel_id),
+                effects=[
+                    EffectUpdate(id=str(effect_id), is_enabled=bool(enabled))
+                ],
+            )
         )
 
     async def set_mix(self, params: MixUpdate) -> MixUpdate:
         """Обновить любой поддерживаемый набор свойств микса."""
-        result = await self.call("setMix", dict(params))
-        update = expect_object(result, "setMix")
-        expect_fields(update, {"id": str}, "setMix")
-        return cast(MixUpdate, update)
+        if not isinstance(params, MixUpdate):
+            raise TypeError("params must be MixUpdate")
+        result = await self.call("setMix", params.to_dict())
+        return parse_schema(result, MixUpdate, "setMix")
 
     async def set_mix_level(self, mix_id: str, level: float) -> MixUpdate:
-        return await self.set_mix({"id": str(mix_id), "level": clamp01(level)})
+        return await self.set_mix(MixUpdate(id=str(mix_id), level=clamp01(level)))
 
     async def set_mix_mute(self, mix_id: str, muted: bool) -> MixUpdate:
-        return await self.set_mix({"id": str(mix_id), "isMuted": bool(muted)})
+        return await self.set_mix(MixUpdate(id=str(mix_id), is_muted=bool(muted)))
 
     async def add_to_channel(self, app_id: str, channel_id: str) -> Channel:
         """Назначить приложение программному каналу."""
@@ -1106,26 +1090,31 @@ class WaveLinkClient:
             "addToChannel",
             {"appId": str(app_id), "channelId": str(channel_id)},
         )
-        channel = expect_object(result, "addToChannel")
-        expect_fields(channel, {"id": str}, "addToChannel")
-        return cast(Channel, channel)
+        return parse_schema(result, Channel, "addToChannel")
 
-    async def set_subscription(self, params: SubscriptionUpdate) -> SubscriptionUpdate:
+    async def set_subscription(
+        self, params: SubscriptionUpdate
+    ) -> SubscriptionUpdate:
         """Обновить одну или несколько подписок на уведомления Wave Link."""
-        payload = deepcopy(params)
+        if not isinstance(params, SubscriptionUpdate):
+            raise TypeError("params must be SubscriptionUpdate")
+        payload = params.to_dict()
         result = await self.call("setSubscription", payload)
-        self._desired_subscriptions.update(payload)
-        update = expect_object(result, "setSubscription")
+        update = parse_schema(result, SubscriptionUpdate, "setSubscription")
+        response_payload = update.to_dict()
         for key in payload:
-            if not isinstance(update.get(key), dict):
+            if key not in response_payload:
                 raise WaveLinkProtocolError(
-                    f"setSubscription returned an invalid or missing {key!r} field"
+                    f"setSubscription returned a missing {key!r} field"
                 )
-        return cast(SubscriptionUpdate, update)
+        self._desired_subscriptions.update(deepcopy(payload))
+        return update
 
     async def subscribe_focused_app(self, enabled: bool = True) -> SubscriptionUpdate:
         return await self.set_subscription(
-            {"focusedAppChanged": {"isEnabled": bool(enabled)}}
+            SubscriptionUpdate(
+                focused_app_changed=FocusedAppSubscription(bool(enabled))
+            )
         )
 
     async def subscribe_level_meter(
@@ -1142,14 +1131,15 @@ class WaveLinkClient:
                 f"Unsupported level-meter type {meter_type!r}; expected {allowed}"
             )
 
-        subscription: LevelMeterSubscription = {
-            "type": meter_type,
-            "id": str(target_id),
-            "isEnabled": bool(enabled),
-        }
-        if sub_id is not None:
-            subscription["subId"] = str(sub_id)
-        return await self.set_subscription({"levelMeterChanged": subscription})
+        subscription = LevelMeterSubscription(
+            type=meter_type,
+            id=str(target_id),
+            is_enabled=bool(enabled),
+            sub_id=str(sub_id) if sub_id is not None else None,
+        )
+        return await self.set_subscription(
+            SubscriptionUpdate(level_meter_changed=subscription)
+        )
 
     async def subscribe_realtime(self) -> SubscriptionUpdate:
         """Включить подписку, работоспособность которой проверена в Wave Link 3.2.5."""
@@ -1177,95 +1167,54 @@ def expect_object(result: Any, method: str) -> dict[str, Any]:
     return result
 
 
-def expect_output_device_result(result: JsonValue) -> dict[str, Any]:
-    """Проверить документированную или устаревшую форму результата setOutputDevice."""
-    update = expect_object(result, "setOutputDevice")
-    if "mainOutput" in update:
-        main_output = update["mainOutput"]
-        if not isinstance(main_output, dict):
-            raise WaveLinkProtocolError(
-                "setOutputDevice returned an invalid 'mainOutput' object"
-            )
-        expect_fields(
-            main_output,
-            {"outputDeviceId": str, "outputId": str},
-            "setOutputDevice",
-            path="mainOutput",
-        )
-        return update
-
-    if "outputDevice" in update:
-        output_device = update["outputDevice"]
-        if not isinstance(output_device, dict):
-            raise WaveLinkProtocolError(
-                "setOutputDevice returned an invalid 'outputDevice' object"
-            )
-        path = "outputDevice"
-    else:
-        output_device = update
-        path = None
-
-    if "outputDeviceId" in output_device or "outputId" in output_device:
-        expect_fields(
-            output_device,
-            {"outputDeviceId": str, "outputId": str},
-            "setOutputDevice",
-        )
-        return update
-
-    expect_fields(output_device, {"id": str}, "setOutputDevice", path=path)
-    if "outputs" in output_device:
-        expect_object_list(
-            output_device,
-            "outputs",
-            "setOutputDevice",
-            required_fields={"id": str},
-        )
-    return update
+SchemaT = TypeVar("SchemaT", bound=JsonModel)
 
 
-FieldType = type[Any] | tuple[type[Any], ...]
+def parse_schema(result: Any, schema: type[SchemaT], method: str) -> SchemaT:
+    """Convert a JSON-RPC object response into a validated object schema."""
+    value = expect_object(result, method)
+    try:
+        return schema.from_dict(value)
+    except WaveLinkSchemaError as exc:
+        raise WaveLinkProtocolError(f"{method} returned invalid data: {exc}") from exc
 
 
-def expect_fields(
-    value: dict[str, Any],
-    fields: dict[str, FieldType],
-    method: str,
-    *,
-    path: str | None = None,
-) -> None:
-    """Проверить обязательные поля, не отклоняя расширения API."""
-    for key, expected_type in fields.items():
-        field = value.get(key)
-        expected_types = (
-            expected_type if isinstance(expected_type, tuple) else (expected_type,)
-        )
-        valid = isinstance(field, expected_types) and (
-            not isinstance(field, bool) or bool in expected_types
-        )
-        if not valid:
-            location = f"{path}.{key}" if path else key
-            raise WaveLinkProtocolError(
-                f"{method} returned an invalid or missing {location!r} field"
-            )
-
-
-def expect_object_list(
+def parse_schema_list(
     result: Any,
     key: str,
+    schema: type[SchemaT],
     method: str,
-    *,
-    required_fields: dict[str, FieldType] | None = None,
-) -> list[dict[str, Any]]:
-    """Проверить свойство объекта, которое должно содержать список объектов."""
+) -> list[SchemaT]:
+    """Convert an object property containing a list of schema objects."""
     container = expect_object(result, method)
     items = container.get(key)
-    if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+    if not isinstance(items, list):
         raise WaveLinkProtocolError(f"{method} returned an invalid {key!r} collection")
-    if required_fields:
-        for index, item in enumerate(items):
-            expect_fields(item, required_fields, method, path=f"{key}[{index}]")
-    return items
+
+    converted: list[SchemaT] = []
+    for index, item in enumerate(items):
+        try:
+            converted.append(schema.from_dict(item, path=f"{key}[{index}]"))
+        except (TypeError, WaveLinkSchemaError) as exc:
+            raise WaveLinkProtocolError(
+                f"{method} returned invalid data: {exc}"
+            ) from exc
+    return converted
+
+
+def parse_output_device_result(result: Any) -> OutputDeviceUpdateResult:
+    """Parse all known result shapes returned by ``setOutputDevice``."""
+    value = expect_object(result, "setOutputDevice")
+    try:
+        if "mainOutput" in value or "outputDevice" in value:
+            return SetOutputDeviceParams.from_dict(value)
+        if "outputDeviceId" in value or "outputId" in value:
+            return MainOutput.from_dict(value)
+        return OutputDeviceUpdate.from_dict(value)
+    except WaveLinkSchemaError as exc:
+        raise WaveLinkProtocolError(
+            f"setOutputDevice returned invalid data: {exc}"
+        ) from exc
 
 
 def clamp01(value: float) -> float:
