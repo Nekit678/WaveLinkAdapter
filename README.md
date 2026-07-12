@@ -1,7 +1,8 @@
 <div align="center">
+  <p><strong>English</strong> · <a href="README.ru.md">Русский</a></p>
   <img src="examples/web_mixer/web/favicon.svg" width="96" height="96" alt="WaveLinkAdapter logo">
   <h1>WaveLinkAdapter</h1>
-  <p><strong>Асинхронный Python-клиент для локального WebSocket / JSON-RPC API Elgato Wave Link 3.x</strong></p>
+  <p><strong>An asynchronous Python client for the local Elgato Wave Link 3.x WebSocket / JSON-RPC API</strong></p>
   <p>
     <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&amp;logo=python&amp;logoColor=white" alt="Python 3.11+"></a>
     <a href="https://www.elgato.com/us/en/s/wave-link-app"><img src="https://img.shields.io/badge/Wave%20Link-3.x-12A8E8?style=flat-square" alt="Wave Link 3.x"></a>
@@ -9,94 +10,95 @@
     <a href="https://github.com/Nekit678/WaveLinkAdapter/commits/main"><img src="https://img.shields.io/github/last-commit/Nekit678/WaveLinkAdapter?style=flat-square" alt="GitHub last commit"></a>
   </p>
   <p>
-    Управляйте каналами, миксами, устройствами, эффектами и подписками Wave Link<br>
-    из Python, WSL или готовой web-консоли для планшета.
+    Control Wave Link channels, mixes, devices, effects, and subscriptions<br>
+    from Python, WSL, or the included tablet-friendly web console.
   </p>
   <p>
-    <a href="#быстрый-старт">Быстрый старт</a> ·
+    <a href="#quick-start">Quick start</a> ·
     <a href="#web-mixer">Web Mixer</a> ·
-    <a href="#карта-api">API</a> ·
-    <a href="#разработка">Разработка</a>
+    <a href="#api-overview">API</a> ·
+    <a href="#development">Development</a>
   </p>
 </div>
 
 ---
 
-## О проекте
+## About
 
-`WaveLinkAdapter` подключается к запущенному Elgato Wave Link, автоматически
-находит его локальный WebSocket-порт и предоставляет удобный асинхронный API с
-типизированными моделями данных. Проект можно использовать как основу для:
+`WaveLinkAdapter` connects to a running Elgato Wave Link instance,
+automatically discovers its local WebSocket port, and exposes a convenient
+asynchronous API backed by typed data models. It can serve as the foundation
+for:
 
-- интеграции со Stream Deck;
-- REST API или WebSocket-шлюза;
-- настольного приложения;
-- домашней автоматизации;
-- собственного интерфейса управления звуком.
+- Stream Deck integrations;
+- REST APIs and WebSocket gateways;
+- desktop applications;
+- home automation;
+- custom audio control surfaces.
 
-В репозитории также есть готовый **Web Mixer** — адаптивная сенсорная консоль,
-которая работает в браузере без Node.js и отдельной сборки.
+The repository also includes **Web Mixer**, a responsive touch-friendly
+console that runs in a browser without Node.js or a separate build step.
 
 > [!IMPORTANT]
-> Клиент проверен с Elgato Wave Link `3.2.5.3731`, interface revision `2`.
-> Локальный API Wave Link может изменяться между версиями приложения.
+> The client has been tested with Elgato Wave Link `3.2.5.3731`, interface
+> revision `2`. Wave Link's local API may change between application versions.
 
-## Содержание
+## Table of contents
 
-- [Возможности](#возможности)
-- [Как это работает](#как-это-работает)
-- [Требования](#требования)
-- [Установка](#установка)
-- [Быстрый старт](#быстрый-старт)
+- [Features](#features)
+- [How it works](#how-it-works)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Quick start](#quick-start)
 - [Web Mixer](#web-mixer)
-- [Основные сценарии](#основные-сценарии)
-- [События и состояние](#события-и-состояние)
-- [Настройка клиента](#настройка-клиента)
-- [Карта API](#карта-api)
-- [Обработка ошибок](#обработка-ошибок)
-- [Инструменты и тесты](#инструменты-и-тесты)
-- [Структура проекта](#структура-проекта)
+- [Common use cases](#common-use-cases)
+- [Events and state](#events-and-state)
+- [Client configuration](#client-configuration)
+- [API overview](#api-overview)
+- [Error handling](#error-handling)
+- [Tools and tests](#tools-and-tests)
+- [Project structure](#project-structure)
 
-## Возможности
+## Features
 
-| | Возможность | Что даёт |
+| | Feature | What it provides |
 |:--:|---|---|
-| 🔎 | Автопоиск порта | Чтение `ws-info.json` в Windows и WSL с резервным поиском по портам Wave Link 3.x. |
-| ⚡ | Асинхронный JSON-RPC | Параллельные запросы, индивидуальные таймауты и корректное сопоставление ответов. |
-| 🔁 | Переподключение | Экспоненциальная задержка и восстановление подписок и метаданных плагина. |
-| 🎚️ | Управление микшером | Каналы, миксы, входы, выходы, mute, уровни, маршрутизация и эффекты. |
-| 📡 | События | Обычные и типизированные обработчики, а также асинхронные потоки событий. |
-| 🧩 | Типизированные модели | `dataclass`-схемы, проверка входных данных и сохранение неизвестных полей API. |
-| 🛠️ | Низкоуровневый доступ | Универсальный `call()` для методов, у которых ещё нет готовой обёртки. |
-| 📱 | Web-интерфейс | Готовый локальный микшер для компьютера или планшета. |
+| 🔎 | Automatic port discovery | Reads `ws-info.json` on Windows and WSL, then falls back to the Wave Link 3.x port range. |
+| ⚡ | Asynchronous JSON-RPC | Concurrent requests, per-call timeouts, and correct response correlation. |
+| 🔁 | Automatic reconnection | Exponential backoff with subscription and plugin metadata restoration. |
+| 🎚️ | Mixer control | Channels, mixes, inputs, outputs, mute, levels, routing, and effects. |
+| 📡 | Event support | Raw and typed handlers, plus asynchronous event streams. |
+| 🧩 | Typed models | `dataclass` schemas, input validation, and preservation of unknown API fields. |
+| 🛠️ | Low-level access | A universal `call()` method for RPC methods without a dedicated wrapper. |
+| 📱 | Web interface | A ready-to-use local mixer for desktop and tablet browsers. |
 
-## Как это работает
+## How it works
 
 ```mermaid
 flowchart LR
     WL["Elgato Wave Link<br>Windows"] <-->|"WebSocket · JSON-RPC"| Core["WaveLinkClient<br>asyncio"]
-    Core --> Types["wavelink_types<br>dataclass-модели"]
-    Core --> App["Ваше приложение"]
-    Core --> Gateway["WebSocket-шлюз"]
-    Gateway --> Browser["Web Mixer<br>браузер / планшет"]
+    Core --> Types["wavelink_types<br>dataclass models"]
+    Core --> App["Your application"]
+    Core --> Gateway["WebSocket gateway"]
+    Gateway --> Browser["Web Mixer<br>browser / tablet"]
 ```
 
-Для коротких сценариев клиент удобно открывать через `async with`. В серверном
-приложении лучше создать один экземпляр `WaveLinkClient` и использовать его всё
-время работы процесса.
+For short-lived scripts, open the client with `async with`. Server applications
+should create one `WaveLinkClient` instance and keep it alive for the lifetime
+of the process.
 
-## Требования
+## Requirements
 
 - Python `3.11+`;
-- Elgato Wave Link `3.x`, запущенный в Windows;
+- Elgato Wave Link `3.x` running on Windows;
 - `websockets>=16,<17`;
-- Windows или WSL для автоматического поиска локального экземпляра Wave Link.
+- Windows or WSL for automatic discovery of the local Wave Link instance.
 
-Python 3.11 требуется из-за использования `asyncio.timeout()`.
+Python 3.11 is required because the client uses `asyncio.timeout()`.
 
-## Установка
+## Installation
 
-Клонируйте репозиторий и создайте виртуальное окружение:
+Clone the repository and create a virtual environment:
 
 ```bash
 git clone https://github.com/Nekit678/WaveLinkAdapter.git
@@ -126,10 +128,10 @@ python -m pip install -r requirements.txt
 
 </details>
 
-Перед подключением запустите Wave Link. В WSL клиент найдёт `ws-info.json` на
-смонтированных Windows-дисках автоматически.
+Start Wave Link before connecting. When running inside WSL, the client
+automatically searches mounted Windows drives for `ws-info.json`.
 
-## Быстрый старт
+## Quick start
 
 ```python
 import asyncio
@@ -149,10 +151,10 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-Контекстный менеджер сам вызывает `connect()` при входе и `close()` при выходе,
-в том числе если внутри блока возникло исключение.
+The context manager calls `connect()` when entering the block and `close()`
+when leaving it, including when an exception is raised.
 
-### Долгоживущий клиент
+### Long-lived client
 
 ```python
 from wavelink_core import WaveLinkClient
@@ -173,44 +175,43 @@ async def application_shutdown() -> None:
     await client.close()
 ```
 
-Не создавайте новое WebSocket-соединение для каждого HTTP-запроса: один клиент
-умеет безопасно обслуживать несколько одновременных RPC-вызовов.
+Do not create a new WebSocket connection for every HTTP request. A single
+client can safely handle multiple concurrent RPC calls.
 
 ## Web Mixer
 
-Готовый пример находится в [`examples/web_mixer`](examples/web_mixer). Он
-запускает Python-шлюз, раздаёт встроенный web-интерфейс и использует одно общее
-соединение с Wave Link для всех браузеров.
+The ready-to-run example lives in [`examples/web_mixer`](examples/web_mixer).
+It starts a Python gateway, serves the bundled web interface, and shares one
+Wave Link connection across all connected browsers.
 
 ```bash
 python -m examples.web_mixer.server
 ```
 
-После запуска откройте **<http://127.0.0.1:8765>**.
+Once the server starts, open **<http://127.0.0.1:8765>**.
 
-Web Mixer поддерживает:
+Web Mixer supports:
 
-- уровни и mute каналов для каждого микса;
-- управление входами, выходами и главным выходом;
-- программные, VST- и аппаратные DSP-эффекты;
-- gain, gain lock и баланс Mic/PC;
-- маршрутизацию приложений между каналами;
-- живые стереоиндикаторы уровней;
-- автоматическое переподключение и восстановление meter-подписок.
+- per-mix channel levels and mute controls;
+- input, output, and main-output management;
+- software, VST, and hardware DSP effects;
+- gain, gain lock, and Mic/PC balance;
+- application routing between channels;
+- live stereo level meters;
+- automatic reconnection and meter subscription restoration.
 
-### Доступ с планшета
+### Tablet access
 
-В доверенной локальной сети запустите сервер на всех интерфейсах:
+On a trusted local network, listen on all interfaces:
 
 ```bash
 python -m examples.web_mixer.server --host 0.0.0.0
 ```
 
-Затем откройте на планшете `http://IP-КОМПЬЮТЕРА:8765`. Локальные адреса из
-диапазонов `10.0.0.0/8`, `172.16.0.0/12` и `192.168.0.0/16` разрешены по
-умолчанию.
+Then open `http://COMPUTER-IP:8765` on the tablet. Private addresses from
+`10.0.0.0/8`, `172.16.0.0/12`, and `192.168.0.0/16` are allowed by default.
 
-Дополнительные параметры сервера:
+Additional server options:
 
 ```bash
 python -m examples.web_mixer.server \
@@ -219,22 +220,22 @@ python -m examples.web_mixer.server \
   --allow-origin http://localhost:5173
 ```
 
-| Параметр | Назначение |
+| Option | Purpose |
 |---|---|
-| `--host` | Интерфейс для прослушивания. |
-| `--port` | HTTP- и WebSocket-порт, по умолчанию `8765`. |
-| `--wavelink-host` | Хост с доступным Wave Link RPC. |
-| `--allow-origin` | Разрешённый Origin; параметр можно повторять. |
-| `--no-web-ui` | Запустить только WebSocket-шлюз. |
-| `--debug` | Включить подробное журналирование. |
+| `--host` | Interface on which the gateway listens. |
+| `--port` | Shared HTTP and WebSocket port; defaults to `8765`. |
+| `--wavelink-host` | Host that exposes the Wave Link RPC endpoint. |
+| `--allow-origin` | Allowed browser Origin; may be specified more than once. |
+| `--no-web-ui` | Run the WebSocket gateway without serving the web client. |
+| `--debug` | Enable verbose logging. |
 
 > [!WARNING]
-> Значение `--allow-origin '*'` отключает проверку Origin. Не публикуйте шлюз в
-> интернет без отдельной аутентификации и TLS-прокси.
+> `--allow-origin '*'` disables Origin validation. Do not expose the gateway to
+> the public internet without separate authentication and a TLS proxy.
 
-## Основные сценарии
+## Common use cases
 
-### Получение состояния
+### Reading mixer state
 
 ```python
 async with WaveLinkClient() as client:
@@ -250,10 +251,10 @@ async with WaveLinkClient() as client:
         print("mix", mix.id, mix.name)
 ```
 
-Используйте идентификаторы, полученные от Wave Link: они зависят от текущей
-конфигурации устройств и микшера.
+Always use identifiers returned by Wave Link. They depend on the current device
+and mixer configuration.
 
-### Управление каналами и миксами
+### Controlling channels and mixes
 
 ```python
 await client.set_channel_level(channel_id, 0.5)
@@ -266,7 +267,7 @@ await client.set_mix_level(mix_id, 0.9)
 await client.set_mix_mute(mix_id, False)
 ```
 
-### Управление входами и выходами
+### Controlling inputs and outputs
 
 ```python
 await client.set_input_mute(device_id, input_id, True)
@@ -281,13 +282,13 @@ await client.set_output_mix(output_device_id, output_id, mix_id)
 await client.set_main_output(output_device_id, output_id)
 ```
 
-Уровни задаются числами от `0.0` до `1.0`. Методы быстрого доступа ограничивают
-значения этим диапазоном; `NaN`, бесконечность и `bool` отклоняются.
+Levels use values from `0.0` to `1.0`. Convenience methods clamp values to that
+range and reject `NaN`, infinity, and `bool` values.
 
-### Типизированные модели
+### Typed models
 
-Высокоуровневые методы возвращают `dataclass`-объекты из `wavelink_types`, а не
-исходные JSON-словари. Имена полей представлены в привычном `snake_case`:
+High-level methods return `dataclass` objects from `wavelink_types` instead of
+raw JSON dictionaries. Fields use idiomatic `snake_case` names:
 
 ```python
 channels = await client.get_channels()
@@ -298,7 +299,7 @@ for mix in channel.mixes or []:
     print(mix.identifier, mix.level)
 ```
 
-Каждая схема поддерживает преобразование в обе стороны:
+Every schema supports conversion in both directions:
 
 ```python
 from wavelink_types import ChannelUpdate
@@ -309,13 +310,13 @@ print(update.to_dict())
 # {'id': 'channel-id', 'level': 0.5, 'isMuted': False}
 ```
 
-При разборе проверяются обязательные поля, типы и вложенные структуры.
-Неизвестные поля новой версии Wave Link сохраняются в `extra`, поэтому они не
-теряются при обратной сериализации.
+Required fields, types, and nested structures are validated while parsing.
+Unknown fields introduced by newer Wave Link versions are retained in `extra`,
+so they survive a serialization round trip.
 
-### Низкоуровневый RPC
+### Low-level RPC
 
-Для метода без готовой обёртки используйте `call()`:
+Use `call()` for an RPC method that has no dedicated wrapper:
 
 ```python
 result = await client.call("getChannels")
@@ -327,12 +328,12 @@ result = await client.call(
 )
 ```
 
-`call()` принимает и возвращает обычные JSON-значения и не проверяет контракт
-конкретного метода.
+`call()` accepts and returns ordinary JSON values and does not validate a
+method-specific response contract.
 
-## События и состояние
+## Events and state
 
-Обычный обработчик получает исходные параметры уведомления:
+A raw event handler receives the original notification parameters:
 
 ```python
 def on_focused_app(params: dict) -> None:
@@ -343,7 +344,7 @@ client.on("focusedAppChanged", on_focused_app)
 await client.subscribe_focused_app()
 ```
 
-Для известных событий доступен типизированный вариант:
+Known events also support typed handlers:
 
 ```python
 from wavelink_types import FocusedAppChanged
@@ -356,7 +357,7 @@ def on_focused_app(event: FocusedAppChanged) -> None:
 client.on_typed("focusedAppChanged", on_focused_app)
 ```
 
-Или асинхронный поток level meter:
+Or consume level meter events as an asynchronous stream:
 
 ```python
 await client.subscribe_level_meter("channel", channel_id)
@@ -366,27 +367,28 @@ async for meters in client.stream_level_meters(queue_size=64):
         print(meter.id, meter.level_left_percentage)
 ```
 
-Также доступны `stream_events()`, `stream_focused_app_changes()` и
-`stream_input_device_changes()`. Обработчики удаляются через `off()` и
-`off_typed()`.
+`stream_events()`, `stream_focused_app_changes()`, and
+`stream_input_device_changes()` are also available. Remove registered handlers
+with `off()` and `off_typed()`.
 
-Последнее состояние сохраняется в свойствах `application_info`,
-`input_devices`, `output_devices`, `main_output`, `channels`, `mixes`,
-`level_meters` и `focused_app`.
+The latest known state is cached in `application_info`, `input_devices`,
+`output_devices`, `main_output`, `channels`, `mixes`, `level_meters`, and
+`focused_app`.
 
-### Переподключение
+### Reconnection behavior
 
-После потери уже установленного соединения клиент автоматически:
+After an established connection is lost, the client automatically:
 
-1. повторяет подключение с экспоненциальной задержкой;
-2. восстанавливает последнее значение `set_plugin_info()`;
-3. повторно включает сохранённые подписки.
+1. retries the connection with exponential backoff;
+2. restores the latest value passed to `set_plugin_info()`;
+3. re-enables remembered subscriptions.
 
-RPC-запрос, выполнявшийся в момент обрыва, завершается
-`WaveLinkDisconnectedError` и не повторяется автоматически — это защищает от
-двойного выполнения изменяющих операций. Явный `close()` отключает реконнект.
+An RPC request that was in flight when the connection failed raises
+`WaveLinkDisconnectedError` and is not replayed automatically. This prevents
+state-changing operations from running twice. An explicit `close()` disables
+reconnection.
 
-## Настройка клиента
+## Client configuration
 
 ```python
 client = WaveLinkClient(
@@ -403,20 +405,21 @@ client = WaveLinkClient(
 )
 ```
 
-| Параметр | По умолчанию | Назначение |
+| Parameter | Default | Purpose |
 |---|:---:|---|
-| `host` | `127.0.0.1` | Хост, на котором доступен Wave Link. |
-| `debug` | `False` | Журналирование исходящих и входящих сообщений. |
-| `rpc_timeout` | `10.0` | Таймаут RPC; `None` отключает его. |
-| `open_timeout` | `3.0` | Таймаут открытия одного соединения. |
-| `close_timeout` | `3.0` | Таймаут закрытия соединения. |
-| `event_queue_size` | `256` | Размер внутренней очереди событий. |
-| `auto_reconnect` | `True` | Переподключение после потери связи. |
-| `reconnect_initial_delay` | `0.5` | Начальная задержка реконнекта. |
-| `reconnect_max_delay` | `10.0` | Максимальная задержка реконнекта. |
-| `reconnect_backoff` | `2.0` | Множитель задержки между попытками. |
+| `host` | `127.0.0.1` | Host on which Wave Link is available. |
+| `debug` | `False` | Log incoming and outgoing WebSocket messages. |
+| `rpc_timeout` | `10.0` | RPC timeout; `None` disables it. |
+| `open_timeout` | `3.0` | Timeout for opening one connection. |
+| `close_timeout` | `3.0` | Timeout for closing the connection. |
+| `event_queue_size` | `256` | Maximum size of the internal event queue. |
+| `auto_reconnect` | `True` | Reconnect after an established connection is lost. |
+| `reconnect_initial_delay` | `0.5` | Initial delay between reconnect attempts. |
+| `reconnect_max_delay` | `10.0` | Maximum reconnect delay. |
+| `reconnect_backoff` | `2.0` | Delay multiplier after each failed attempt. |
 
-Для просмотра WebSocket-обмена настройте стандартный `logging`:
+To inspect the WebSocket exchange, configure Python's standard `logging`
+module:
 
 ```python
 import logging
@@ -425,24 +428,24 @@ logging.basicConfig(level=logging.DEBUG)
 client = WaveLinkClient(debug=True)
 ```
 
-## Карта API
+## API overview
 
-| Категория | Методы |
+| Category | Methods |
 |---|---|
-| Соединение | `connect`, `close`, `wait_until_connected`, `discover_ports` |
-| Чтение | `get_application_info`, `get_input_devices`, `get_output_devices`, `get_channels`, `get_mixes` |
-| Входы | `set_input_device`, `set_input_mute`, `set_input_gain`, `set_input_gain_lock`, `set_input_mic_pc_mix`, `set_input_effect_enabled` |
-| Выходы | `set_output_device`, `set_main_output`, `set_output_level`, `set_output_mute`, `set_output_mix`, `remove_output_from_mix` |
-| Каналы | `set_channel`, `set_channel_level`, `set_channel_mute`, `set_channel_mix_level`, `set_channel_mix_mute`, `set_channel_effect_enabled`, `add_to_channel` |
-| Миксы | `set_mix`, `set_mix_level`, `set_mix_mute` |
-| События | `on`, `off`, `on_typed`, `off_typed`, `stream_events` и специализированные stream-методы |
-| Подписки | `set_subscription`, `subscribe_focused_app`, `subscribe_level_meter`, `subscribe_realtime`, `try_subscribe_level_meters` |
-| Интеграции | `set_plugin_info`, `call` |
+| Connection | `connect`, `close`, `wait_until_connected`, `discover_ports` |
+| Reading | `get_application_info`, `get_input_devices`, `get_output_devices`, `get_channels`, `get_mixes` |
+| Inputs | `set_input_device`, `set_input_mute`, `set_input_gain`, `set_input_gain_lock`, `set_input_mic_pc_mix`, `set_input_effect_enabled` |
+| Outputs | `set_output_device`, `set_main_output`, `set_output_level`, `set_output_mute`, `set_output_mix`, `remove_output_from_mix` |
+| Channels | `set_channel`, `set_channel_level`, `set_channel_mute`, `set_channel_mix_level`, `set_channel_mix_mute`, `set_channel_effect_enabled`, `add_to_channel` |
+| Mixes | `set_mix`, `set_mix_level`, `set_mix_mute` |
+| Events | `on`, `off`, `on_typed`, `off_typed`, `stream_events`, and specialized stream methods |
+| Subscriptions | `set_subscription`, `subscribe_focused_app`, `subscribe_level_meter`, `subscribe_realtime`, `try_subscribe_level_meters` |
+| Integrations | `set_plugin_info`, `call` |
 
-Setter-методы принимают типизированные update-схемы. Обычные JSON-словари
-используются только на уровне `call()` и транспорта.
+Setter methods accept typed update schemas. Raw JSON dictionaries are only used
+at the `call()` and transport layers.
 
-## Обработка ошибок
+## Error handling
 
 ```python
 from wavelink_core import (
@@ -456,40 +459,40 @@ from wavelink_core import (
 try:
     await client.set_channel_level(channel_id, 0.5)
 except WaveLinkTimeoutError as exc:
-    print("Wave Link не ответил:", exc)
+    print("Wave Link did not respond:", exc)
 except WaveLinkDisconnectedError as exc:
-    print("Соединение потеряно:", exc)
+    print("Connection lost:", exc)
 except WaveLinkRpcError as exc:
     print("RPC error:", exc.code, exc.message, exc.data)
 except WaveLinkProtocolError as exc:
-    print("Неожиданная структура ответа:", exc)
+    print("Unexpected response shape:", exc)
 ```
 
-| Исключение | Причина |
+| Exception | Cause |
 |---|---|
-| `WaveLinkRpcError` | Wave Link вернул JSON-RPC `error`. |
-| `WaveLinkProtocolError` | Ответ не соответствует ожидаемому контракту. |
-| `WaveLinkDisconnectedError` | Соединение отсутствует или было потеряно. |
-| `WaveLinkTimeoutError` | Истёк таймаут RPC или ожидания реконнекта. |
-| `ConnectionError` | Не удалось подключиться ни к одному найденному порту. |
+| `WaveLinkRpcError` | Wave Link returned a JSON-RPC `error`. |
+| `WaveLinkProtocolError` | The response does not match the expected contract. |
+| `WaveLinkDisconnectedError` | The connection is unavailable or was lost. |
+| `WaveLinkTimeoutError` | An RPC call or reconnect wait timed out. |
+| `ConnectionError` | The client could not connect to any discovered port. |
 
-## Инструменты и тесты
+## Tools and tests
 
-### Консольный тестер методов
+### Command-line method tester
 
-Посмотреть доступные методы:
+List available methods:
 
 ```bash
 python wavelink_method_tester.py --list-methods
 ```
 
-Вызвать безопасный метод чтения:
+Call a read-only method:
 
 ```bash
 python wavelink_method_tester.py get_channels
 ```
 
-Изменяющие методы требуют явного флага `--live`:
+State-changing methods require an explicit `--live` flag:
 
 ```bash
 python wavelink_method_tester.py set_channel_level \
@@ -497,50 +500,51 @@ python wavelink_method_tester.py set_channel_level \
   --live
 ```
 
-### Автоматические тесты
+### Automated tests
 
 ```bash
 python -m unittest discover -v
 ```
 
-Тесты не требуют запущенного Wave Link: транспорт и ответы API эмулируются.
+The automated tests do not require a running Wave Link instance; they emulate
+the transport and API responses.
 
 > [!CAUTION]
-> `live_wavelink_integration.py` изменяет состояние реального микшера и затем
-> пытается восстановить его. Запускайте этот сценарий только осознанно.
+> `live_wavelink_integration.py` changes the state of a real mixer and then
+> attempts to restore it. Run this script only when you understand the impact.
 
-## Структура проекта
+## Project structure
 
 ```text
 WaveLinkAdapter/
-├── wavelink_core.py              # WebSocket-транспорт и WaveLinkClient
-├── wavelink_types.py             # Типизированные модели API
-├── wavelink_method_tester.py     # CLI для проверки публичных методов
-├── live_wavelink_integration.py  # Проверка с реальным Wave Link
-├── test_wavelink_core.py         # Тесты ядра
+├── wavelink_core.py              # WebSocket transport and WaveLinkClient
+├── wavelink_types.py             # Typed API models
+├── wavelink_method_tester.py     # CLI for exercising public methods
+├── live_wavelink_integration.py  # Checks against a real Wave Link instance
+├── test_wavelink_core.py         # Core test suite
 ├── requirements.txt
 └── examples/
     └── web_mixer/
-        ├── server.py             # HTTP / WebSocket-шлюз
+        ├── server.py             # HTTP / WebSocket gateway
         ├── test_server.py
-        └── web/                  # HTML, CSS и JavaScript без сборщика
+        └── web/                  # Build-free HTML, CSS, and JavaScript
 ```
 
-## Разработка
+## Development
 
-Перед отправкой изменений:
+Before submitting changes, run:
 
 ```bash
 python -m unittest discover -v
 python -m compileall wavelink_core.py wavelink_types.py examples
 ```
 
-Issues и pull request'ы приветствуются. При изменении RPC-контракта добавьте
-тест, который фиксирует новую форму запроса или ответа, и укажите версию Wave
-Link, на которой она была проверена.
+Issues and pull requests are welcome. When changing the RPC contract, include a
+test that captures the new request or response shape and mention the Wave Link
+version used for verification.
 
 ---
 
 <div align="center">
-  Сделано для локальных интеграций с Elgato Wave Link.
+  Built for local integrations with Elgato Wave Link.
 </div>
