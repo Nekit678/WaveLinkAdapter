@@ -4,10 +4,11 @@
   <h1>WaveLinkAdapter</h1>
   <p><strong>An asynchronous Python client for the local Elgato Wave Link 3.x WebSocket / JSON-RPC API</strong></p>
   <p>
+    <a href="https://pypi.org/project/wavelink-adapter/"><img src="https://img.shields.io/pypi/v/wavelink-adapter?style=flat-square&amp;logo=pypi&amp;logoColor=white" alt="PyPI version"></a>
     <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&amp;logo=python&amp;logoColor=white" alt="Python 3.11+"></a>
     <a href="https://www.elgato.com/us/en/s/wave-link-app"><img src="https://img.shields.io/badge/Wave%20Link-3.x-12A8E8?style=flat-square" alt="Wave Link 3.x"></a>
-    <a href="https://docs.python.org/3/library/asyncio.html"><img src="https://img.shields.io/badge/asyncio-ready-16D2A0?style=flat-square" alt="asyncio ready"></a>
-    <a href="https://github.com/Nekit678/WaveLinkAdapter/commits/main"><img src="https://img.shields.io/github/last-commit/Nekit678/WaveLinkAdapter?style=flat-square" alt="GitHub last commit"></a>
+    <a href="https://github.com/Nekit678/WaveLinkAdapter/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Nekit678/WaveLinkAdapter/ci.yml?branch=main&amp;style=flat-square&amp;label=CI&amp;logo=githubactions&amp;logoColor=white" alt="CI status"></a>
+    <a href="https://github.com/Nekit678/WaveLinkAdapter/blob/main/LICENSE"><img src="https://img.shields.io/pypi/l/wavelink-adapter?style=flat-square" alt="MIT license"></a>
   </p>
   <p>
     Control Wave Link channels, mixes, devices, effects, and subscriptions<br>
@@ -15,6 +16,7 @@
   </p>
   <p>
     <a href="#quick-start">Quick start</a> ·
+    <a href="https://pypi.org/project/wavelink-adapter/">PyPI</a> ·
     <a href="#web-mixer">Web Mixer</a> ·
     <a href="#api-overview">API</a> ·
     <a href="#development">Development</a>
@@ -39,6 +41,11 @@ for:
 The repository also includes **Web Mixer**, a responsive touch-friendly
 console that runs in a browser without Node.js or a separate build step.
 
+> [!NOTE]
+> WaveLinkAdapter is an unofficial community project and is not affiliated with
+> or endorsed by Elgato. Elgato and Wave Link are trademarks of their respective
+> owners.
+
 > [!IMPORTANT]
 > The client has been tested with Elgato Wave Link `3.2.5.3731`, interface
 > revision `2`. Wave Link's local API may change between application versions.
@@ -56,7 +63,7 @@ console that runs in a browser without Node.js or a separate build step.
 - [Client configuration](#client-configuration)
 - [API overview](#api-overview)
 - [Error handling](#error-handling)
-- [Tools and tests](#tools-and-tests)
+- [Tests](#tests)
 - [Project structure](#project-structure)
 
 ## Features
@@ -485,31 +492,7 @@ except WaveLinkProtocolError as exc:
 | `WaveLinkTimeoutError` | An RPC call or reconnect wait timed out. |
 | `ConnectionError` | The client could not connect to any discovered port. |
 
-## Tools and tests
-
-### Command-line method tester
-
-List available methods:
-
-```bash
-python wavelink_method_tester.py --list-methods
-```
-
-Call a read-only method:
-
-```bash
-python wavelink_method_tester.py get_channels
-```
-
-State-changing methods require an explicit `--live` flag:
-
-```bash
-python wavelink_method_tester.py set_channel_level \
-  --args '["CHANNEL_ID", 0.5]' \
-  --live
-```
-
-### Automated tests
+## Tests
 
 ```bash
 python -m unittest discover -v
@@ -517,10 +500,6 @@ python -m unittest discover -v
 
 The automated tests do not require a running Wave Link instance; they emulate
 the transport and API responses.
-
-> [!CAUTION]
-> `live_wavelink_integration.py` changes the state of a real mixer and then
-> attempts to restore it. Run this script only when you understand the impact.
 
 ## Project structure
 
@@ -536,8 +515,6 @@ WaveLinkAdapter/
 │       └── py.typed              # PEP 561 typing marker
 ├── tests/
 │   └── test_client.py            # Core test suite
-├── wavelink_method_tester.py     # CLI for exercising public methods
-├── live_wavelink_integration.py  # Checks against a real Wave Link instance
 └── examples/
     └── web_mixer/
         ├── server.py             # HTTP / WebSocket gateway

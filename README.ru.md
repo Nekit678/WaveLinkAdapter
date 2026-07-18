@@ -4,10 +4,11 @@
   <h1>WaveLinkAdapter</h1>
   <p><strong>Асинхронный Python-клиент для локального WebSocket / JSON-RPC API Elgato Wave Link 3.x</strong></p>
   <p>
+    <a href="https://pypi.org/project/wavelink-adapter/"><img src="https://img.shields.io/pypi/v/wavelink-adapter?style=flat-square&amp;logo=pypi&amp;logoColor=white" alt="Версия на PyPI"></a>
     <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&amp;logo=python&amp;logoColor=white" alt="Python 3.11+"></a>
     <a href="https://www.elgato.com/us/en/s/wave-link-app"><img src="https://img.shields.io/badge/Wave%20Link-3.x-12A8E8?style=flat-square" alt="Wave Link 3.x"></a>
-    <a href="https://docs.python.org/3/library/asyncio.html"><img src="https://img.shields.io/badge/asyncio-ready-16D2A0?style=flat-square" alt="asyncio ready"></a>
-    <a href="https://github.com/Nekit678/WaveLinkAdapter/commits/main"><img src="https://img.shields.io/github/last-commit/Nekit678/WaveLinkAdapter?style=flat-square" alt="GitHub last commit"></a>
+    <a href="https://github.com/Nekit678/WaveLinkAdapter/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Nekit678/WaveLinkAdapter/ci.yml?branch=main&amp;style=flat-square&amp;label=CI&amp;logo=githubactions&amp;logoColor=white" alt="Статус CI"></a>
+    <a href="https://github.com/Nekit678/WaveLinkAdapter/blob/main/LICENSE"><img src="https://img.shields.io/pypi/l/wavelink-adapter?style=flat-square" alt="Лицензия MIT"></a>
   </p>
   <p>
     Управляйте каналами, миксами, устройствами, эффектами и подписками Wave Link<br>
@@ -15,6 +16,7 @@
   </p>
   <p>
     <a href="#быстрый-старт">Быстрый старт</a> ·
+    <a href="https://pypi.org/project/wavelink-adapter/">PyPI</a> ·
     <a href="#web-mixer">Web Mixer</a> ·
     <a href="#карта-api">API</a> ·
     <a href="#разработка">Разработка</a>
@@ -38,6 +40,11 @@
 В репозитории также есть готовый **Web Mixer** — адаптивная сенсорная консоль,
 которая работает в браузере без Node.js и отдельной сборки.
 
+> [!NOTE]
+> WaveLinkAdapter — неофициальный проект сообщества, не связанный с Elgato и не
+> одобренный компанией. Elgato и Wave Link являются товарными знаками их
+> владельцев.
+
 > [!IMPORTANT]
 > Клиент проверен с Elgato Wave Link `3.2.5.3731`, interface revision `2`.
 > Локальный API Wave Link может изменяться между версиями приложения.
@@ -55,7 +62,7 @@
 - [Настройка клиента](#настройка-клиента)
 - [Карта API](#карта-api)
 - [Обработка ошибок](#обработка-ошибок)
-- [Инструменты и тесты](#инструменты-и-тесты)
+- [Тесты](#тесты)
 - [Структура проекта](#структура-проекта)
 
 ## Возможности
@@ -483,41 +490,13 @@ except WaveLinkProtocolError as exc:
 | `WaveLinkTimeoutError` | Истёк таймаут RPC или ожидания реконнекта. |
 | `ConnectionError` | Не удалось подключиться ни к одному найденному порту. |
 
-## Инструменты и тесты
-
-### Консольный тестер методов
-
-Посмотреть доступные методы:
-
-```bash
-python wavelink_method_tester.py --list-methods
-```
-
-Вызвать безопасный метод чтения:
-
-```bash
-python wavelink_method_tester.py get_channels
-```
-
-Изменяющие методы требуют явного флага `--live`:
-
-```bash
-python wavelink_method_tester.py set_channel_level \
-  --args '["CHANNEL_ID", 0.5]' \
-  --live
-```
-
-### Автоматические тесты
+## Тесты
 
 ```bash
 python -m unittest discover -v
 ```
 
 Тесты не требуют запущенного Wave Link: транспорт и ответы API эмулируются.
-
-> [!CAUTION]
-> `live_wavelink_integration.py` изменяет состояние реального микшера и затем
-> пытается восстановить его. Запускайте этот сценарий только осознанно.
 
 ## Структура проекта
 
@@ -533,8 +512,6 @@ WaveLinkAdapter/
 │       └── py.typed              # Маркер типизации PEP 561
 ├── tests/
 │   └── test_client.py            # Тесты ядра
-├── wavelink_method_tester.py     # CLI для проверки публичных методов
-├── live_wavelink_integration.py  # Проверка с реальным Wave Link
 └── examples/
     └── web_mixer/
         ├── server.py             # HTTP / WebSocket-шлюз
