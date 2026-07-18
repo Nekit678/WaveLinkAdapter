@@ -1,8 +1,12 @@
-"""Низкоуровневый WebSocket/JSON-RPC-клиент для Elgato Wave Link 3.x.
+"""Asynchronous WebSocket/JSON-RPC client for Elgato Wave Link 3.x.
 
-Он отвечает за поиск порта, жизненный цикл WebSocket-соединения, сопоставление
-JSON-RPC-запросов и ответов, обработку событий и RPC-обёртки Wave Link,
-которые используются остальными частями проекта.
+The module provides :class:`WaveLinkClient`, its public exceptions and callback
+types. The client discovers the local Wave Link WebSocket endpoint, correlates
+concurrent JSON-RPC requests with responses, maintains a typed state cache,
+dispatches notifications, and restores subscriptions after reconnection.
+
+Most applications should import public names from :mod:`wavelink_adapter`
+rather than from this implementation module directly.
 """
 
 from __future__ import annotations
@@ -56,7 +60,9 @@ from .models import (
 )
 
 
+#: Synchronous or asynchronous callback receiving raw notification parameters.
 EventHandler = Callable[[dict[str, Any]], Awaitable[None] | None]
+#: Union of all typed event values produced by known Wave Link notifications.
 WaveLinkEvent = (
     InputDevice
     | OutputDevice
@@ -70,11 +76,20 @@ WaveLinkEvent = (
     | list[Channel]
     | list[Mix]
 )
+#: Synchronous or asynchronous callback receiving a validated event model.
 TypedEventHandler = Callable[[WaveLinkEvent], Awaitable[None] | None]
 
 
 class WaveLinkRpcError(RuntimeError):
-    """Wave Link вернул ответ с JSON-RPC-ошибкой."""
+    """Error response returned by a Wave Link JSON-RPC method.
+
+    Attributes:
+        code: JSON-RPC error code, if the server supplied an integer code.
+        message: Human-readable server error message.
+        data: Optional method-specific error details.
+        method: RPC method that produced the error, when known.
+        request_id: Numeric JSON-RPC request identifier, when known.
+    """
 
     def __init__(
         self,
@@ -85,6 +100,15 @@ class WaveLinkRpcError(RuntimeError):
         method: str | None = None,
         request_id: int | None = None,
     ) -> None:
+        """Create an exception from a JSON-RPC error object or message.
+
+        Args:
+            error: Server error object or a plain fallback message.
+            code: Error code used when ``error`` does not contain one.
+            data: Additional error data used when absent from ``error``.
+            method: RPC method associated with the failed request.
+            request_id: JSON-RPC request identifier.
+        """
         if isinstance(error, dict):
             raw_code = error.get("code")
             code = raw_code if isinstance(raw_code, int) else code
@@ -106,24 +130,46 @@ class WaveLinkRpcError(RuntimeError):
 
     @property
     def is_invalid_params(self) -> bool:
-        """Показывает, отклонил ли сервер структуру параметров JSON-RPC."""
+        """Whether the server rejected the RPC parameter shape.
+
+        This is ``True`` for the standard JSON-RPC ``-32602`` error code. Some
+        compatibility wrappers use it to retry an alternative Wave Link payload
+        shape; other RPC errors are never retried automatically.
+        """
         return self.code == -32602
 
 
 class WaveLinkProtocolError(RuntimeError):
-    """Ответ Wave Link не соответствует ожидаемому контракту API."""
+    """Raised when a response violates the expected Wave Link API contract.
+
+    Examples include a response with the wrong top-level type, a missing
+    collection, an invalid model field, or a connection to an unexpected local
+    WebSocket service.
+    """
 
 
 class WaveLinkDisconnectedError(ConnectionError):
-    """WebSocket-соединение закрылось во время выполнения операции."""
+    """Raised when an RPC operation has no usable Wave Link connection.
+
+    Pending calls receive this exception when the socket closes. A new call may
+    wait for an active automatic-reconnection attempt, but in-flight RPC calls
+    are never replayed because setters may have already reached Wave Link.
+    """
 
 
 class WaveLinkTimeoutError(TimeoutError):
-    """Wave Link не ответил на RPC-запрос за отведённое время."""
+    """Raised when an RPC call or connection wait exceeds its timeout."""
 
 
 class ConnectionState(Enum):
-    """Состояния жизненного цикла для диагностики и управления клиентом."""
+    """Lifecycle state of :class:`WaveLinkClient`.
+
+    Attributes:
+        DISCONNECTED: No active socket or connection attempt.
+        CONNECTING: Candidate ports are being tried or a session is restoring.
+        CONNECTED: The socket is validated and ready for public RPC calls.
+        CLOSING: Reader, dispatcher, pending calls, and socket are being stopped.
+    """
 
     DISCONNECTED = auto()
     CONNECTING = auto()
@@ -132,13 +178,19 @@ class ConnectionState(Enum):
 
 
 class WebSocketConnection(Protocol):
-    """Минимальная часть WebSocket-интерфейса, необходимая клиенту."""
+    """Structural protocol for the WebSocket operations used by the client."""
 
-    def __aiter__(self) -> AsyncIterator[str | bytes]: ...
+    def __aiter__(self) -> AsyncIterator[str | bytes]:
+        """Iterate over text or binary frames received from the server."""
+        ...
 
-    async def send(self, message: str) -> None: ...
+    async def send(self, message: str) -> None:
+        """Send one serialized JSON-RPC text frame."""
+        ...
 
-    async def close(self) -> None: ...
+    async def close(self) -> None:
+        """Close the WebSocket connection."""
+        ...
 
 
 @dataclass(slots=True)
@@ -149,7 +201,52 @@ class _PendingRequest:
 
 
 class WaveLinkClient:
-    """Асинхронный клиент локального WebSocket/JSON-RPC API Wave Link."""
+    """High-level asynchronous client for the local Wave Link 3.x API.
+
+    Create one client for the lifetime of an application. Short-lived scripts
+    can use ``async with WaveLinkClient() as client``; long-lived services can
+    call :meth:`connect` and :meth:`close` explicitly. Concurrent RPC calls are
+    supported and matched by JSON-RPC request identifier.
+
+    Successful getters and typed notifications update local state caches. Cache
+    properties return immutable tuple snapshots, while ``application_info``,
+    ``main_output``, ``level_meters``, and ``focused_app`` expose the latest
+    corresponding values or ``None`` before data has been received.
+
+    Unless a method says otherwise, every RPC wrapper may raise
+    :class:`WaveLinkDisconnectedError`, :class:`WaveLinkTimeoutError`,
+    :class:`WaveLinkRpcError`, or :class:`WaveLinkProtocolError` while sending,
+    waiting for, or validating a Wave Link response.
+
+    Args:
+        host: Hostname or IP address exposing Wave Link. Automatic port
+            discovery still applies to this host.
+        debug: Emit verbose protocol and discovery messages through ``logging``.
+        rpc_timeout: Default timeout in seconds for one RPC response. ``None``
+            disables the default RPC timeout.
+        open_timeout: Timeout in seconds for opening each candidate WebSocket.
+            ``None`` delegates timeout behavior to ``websockets``.
+        close_timeout: Timeout in seconds for closing a WebSocket. ``None``
+            delegates timeout behavior to ``websockets``.
+        event_queue_size: Maximum number of raw notifications waiting for the
+            internal event dispatcher.
+        auto_reconnect: Automatically reconnect after an unexpected socket loss.
+        reconnect_initial_delay: Delay in seconds before the first reconnect.
+        reconnect_max_delay: Maximum delay between reconnect attempts.
+        reconnect_backoff: Multiplier applied to each reconnect delay.
+
+    Attributes:
+        host: Configured Wave Link host.
+        state: Current :class:`ConnectionState`.
+        connected_port: Active WebSocket port, or ``None`` while disconnected.
+        application_info: Latest application metadata.
+        main_output: Latest selected main output.
+        level_meters: Latest typed level-meter notification.
+        focused_app: Latest typed focused-application notification.
+
+    Raises:
+        ValueError: If a timeout, queue size, delay, or backoff is invalid.
+    """
 
     FALLBACK_PORTS = list(range(1884, 1894))
     LEVEL_METER_TYPES: tuple[LevelMeterType, ...] = (
@@ -188,6 +285,7 @@ class WaveLinkClient:
         reconnect_max_delay: float = 10.0,
         reconnect_backoff: float = 2.0,
     ):
+        """Initialize configuration and empty state without opening a socket."""
         if rpc_timeout is not None and rpc_timeout <= 0:
             raise ValueError("rpc_timeout must be greater than zero or None")
         if open_timeout is not None and open_timeout <= 0:
@@ -251,22 +349,31 @@ class WaveLinkClient:
 
     @property
     def input_devices(self) -> tuple[InputDevice, ...]:
-        """Latest input-device state obtained by RPC or notifications."""
+        """Return a snapshot of the latest known input-device state.
+
+        The tuple is empty until :meth:`get_input_devices` succeeds or a typed
+        input-device notification arrives. Model instances inside the tuple are
+        treated as snapshots and should not be used as outgoing update objects.
+        """
         return tuple(self._input_devices)
 
     @property
     def output_devices(self) -> tuple[OutputDevice, ...]:
-        """Latest output-device state obtained by RPC or notifications."""
+        """Return a snapshot of the latest known output-device state.
+
+        The tuple is empty until :meth:`get_output_devices` succeeds or a typed
+        output-device notification arrives.
+        """
         return tuple(self._output_devices)
 
     @property
     def channels(self) -> tuple[Channel, ...]:
-        """Latest channel state obtained by RPC or notifications."""
+        """Return a snapshot of channels from the latest RPC or notification."""
         return tuple(self._channels)
 
     @property
     def mixes(self) -> tuple[Mix, ...]:
-        """Latest mix state obtained by RPC or notifications."""
+        """Return a snapshot of mixes from the latest RPC or notification."""
         return tuple(self._mixes)
 
     # ------------------------------------------------------------------
@@ -274,6 +381,20 @@ class WaveLinkClient:
     # ------------------------------------------------------------------
 
     def discover_ports(self) -> list[int]:
+        """Return candidate Wave Link WebSocket ports in connection order.
+
+        On Windows the method reads the packaged application's ``ws-info.json``.
+        Under WSL it searches mounted Windows user profiles. Valid discovered
+        ports appear first, followed by the Wave Link 3.x fallback range
+        ``1884`` through ``1893`` without duplicates.
+
+        Returns:
+            A new ordered list of candidate TCP ports.
+
+        Notes:
+            Missing, unreadable, malformed, or out-of-range port files are
+            ignored. Set ``debug=True`` to log why a candidate file was skipped.
+        """
         ports: list[int] = []
 
         for path in self._candidate_ws_info_paths():
@@ -360,6 +481,21 @@ class WaveLinkClient:
         return deduped
 
     async def connect(self) -> None:
+        """Discover, open, and validate a Wave Link connection.
+
+        Candidate ports are tried in :meth:`discover_ports` order. A connection
+        is accepted only after ``getApplicationInfo`` identifies Wave Link and
+        reports a supported interface revision. Saved plugin metadata and
+        subscriptions are restored before the client becomes ``CONNECTED``.
+
+        Calling this method while already connected is a no-op.
+
+        Raises:
+            ConnectionError: If no candidate port yields a valid Wave Link
+                session. The message summarizes individual port failures.
+            asyncio.CancelledError: If the connection attempt is cancelled; any
+                partially opened socket is cleaned up first.
+        """
         self._close_requested = False
         await self._connect()
 
@@ -457,6 +593,13 @@ class WaveLinkClient:
             )
 
     async def close(self) -> None:
+        """Close the client and stop automatic reconnection.
+
+        Reader and dispatcher tasks are cancelled, the socket is closed, and
+        pending RPC calls fail with :class:`WaveLinkDisconnectedError`. The
+        method is idempotent and the client may be connected again later by
+        calling :meth:`connect`.
+        """
         self._close_requested = True
         self._connected_event.clear()
         reconnect_task = self._reconnect_task
@@ -469,7 +612,17 @@ class WaveLinkClient:
             await self._reset_connection_locked()
 
     async def wait_until_connected(self, timeout: float | None = None) -> None:
-        """Дождаться успешного первичного подключения или переподключения."""
+        """Wait until an initial connection or reconnection succeeds.
+
+        Args:
+            timeout: Maximum number of seconds to wait. ``None`` waits
+                indefinitely.
+
+        Raises:
+            ValueError: If ``timeout`` is not positive or ``None``.
+            WaveLinkTimeoutError: If the client is not connected before the
+                timeout expires.
+        """
         if timeout is not None and timeout <= 0:
             raise ValueError("timeout must be greater than zero or None")
         if self.state is ConnectionState.CONNECTED and self.ws is not None:
@@ -653,10 +806,12 @@ class WaveLinkClient:
                 )
 
     async def __aenter__(self) -> "WaveLinkClient":
+        """Connect the client and return it for an ``async with`` block."""
         await self.connect()
         return self
 
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        """Close the client when leaving an ``async with`` block."""
         await self.close()
 
     # ------------------------------------------------------------------
@@ -854,13 +1009,34 @@ class WaveLinkClient:
         return event
 
     def on(self, method: str, handler: EventHandler) -> None:
-        """Зарегистрировать обработчик уведомлений указанного метода JSON-RPC."""
+        """Register a callback for raw parameters of a JSON-RPC notification.
+
+        The callback may be synchronous or asynchronous. Handlers run on the
+        event-dispatch task rather than the socket reader, so they may safely
+        issue RPC calls. Exceptions raised by a handler are logged and isolated
+        from other handlers.
+
+        Args:
+            method: Exact Wave Link notification method name.
+            handler: Callable receiving the raw ``params`` dictionary.
+
+        Raises:
+            TypeError: If ``handler`` is not callable.
+        """
         if not callable(handler):
             raise TypeError("handler must be callable")
         self._event_handlers.setdefault(method, []).append(handler)
 
     def off(self, method: str, handler: EventHandler) -> bool:
-        """Удалить одну регистрацию обработчика уведомлений."""
+        """Remove one registration of a raw notification callback.
+
+        Args:
+            method: Notification method used when registering the handler.
+            handler: Exact callback object previously passed to :meth:`on`.
+
+        Returns:
+            ``True`` if one registration was removed, otherwise ``False``.
+        """
         handlers = self._event_handlers.get(method)
         if not handlers:
             return False
@@ -873,7 +1049,20 @@ class WaveLinkClient:
         return True
 
     def on_typed(self, method: str, handler: TypedEventHandler) -> None:
-        """Register a validated object handler for a known Wave Link event."""
+        """Register a callback for a validated Wave Link event model.
+
+        Known collection events yield lists of models; single-object events
+        yield the corresponding model declared by :data:`WaveLinkEvent`. Typed
+        notifications also update the client's state cache before callbacks run.
+
+        Args:
+            method: A method name in :attr:`TYPED_EVENT_METHODS`.
+            handler: Synchronous or asynchronous typed event callback.
+
+        Raises:
+            ValueError: If the method has no registered typed schema.
+            TypeError: If ``handler`` is not callable.
+        """
         if method not in self.TYPED_EVENT_METHODS:
             raise ValueError(f"Unsupported typed Wave Link event: {method}")
         if not callable(handler):
@@ -881,7 +1070,15 @@ class WaveLinkClient:
         self._typed_event_handlers.setdefault(method, []).append(handler)
 
     def off_typed(self, method: str, handler: TypedEventHandler) -> bool:
-        """Remove one typed event-handler registration."""
+        """Remove one registration of a typed event callback.
+
+        Args:
+            method: Notification method used when registering the handler.
+            handler: Exact callback object previously passed to :meth:`on_typed`.
+
+        Returns:
+            ``True`` if one registration was removed, otherwise ``False``.
+        """
         handlers = self._typed_event_handlers.get(method)
         if not handlers:
             return False
@@ -899,7 +1096,29 @@ class WaveLinkClient:
         *,
         queue_size: int | None = None,
     ) -> AsyncIterator[WaveLinkEvent]:
-        """Yield validated events without blocking the WebSocket event loop."""
+        """Yield validated events from one known notification method.
+
+        A temporary typed handler feeds a bounded queue for this async iterator.
+        If a slow consumer fills the queue, new events are dropped and a warning
+        is logged. Closing or cancelling the iterator unregisters its handler.
+
+        Args:
+            method: A method name in :attr:`TYPED_EVENT_METHODS`.
+            queue_size: Per-stream queue capacity. ``None`` uses the client's
+                ``event_queue_size``.
+
+        Yields:
+            Validated model objects or model lists for ``method``.
+
+        Raises:
+            ValueError: If ``method`` is unsupported or ``queue_size`` is not
+                positive.
+
+        Notes:
+            This method consumes notifications but does not enable a server-side
+            subscription. Call the matching ``subscribe_*`` method when Wave
+            Link requires explicit subscription.
+        """
         if method not in self.TYPED_EVENT_METHODS:
             raise ValueError(f"Unsupported typed Wave Link event: {method}")
         capacity = self.event_queue_size if queue_size is None else queue_size
@@ -929,6 +1148,19 @@ class WaveLinkClient:
     async def stream_level_meters(
         self, *, queue_size: int | None = None
     ) -> AsyncIterator[LevelMeterChanged]:
+        """Yield typed real-time level-meter notifications.
+
+        Args:
+            queue_size: Per-stream queue capacity, or ``None`` to use the client
+                default.
+
+        Yields:
+            :class:`LevelMeterChanged` samples as Wave Link publishes them.
+
+        Notes:
+            Enable desired meters first with :meth:`subscribe_level_meter` or
+            :meth:`try_subscribe_level_meters`.
+        """
         stream = self.stream_events("levelMeterChanged", queue_size=queue_size)
         try:
             async for event in stream:
@@ -940,6 +1172,18 @@ class WaveLinkClient:
     async def stream_focused_app_changes(
         self, *, queue_size: int | None = None
     ) -> AsyncIterator[FocusedAppChanged]:
+        """Yield typed focused-application notifications.
+
+        Args:
+            queue_size: Per-stream queue capacity, or ``None`` to use the client
+                default.
+
+        Yields:
+            :class:`FocusedAppChanged` values after cache merging.
+
+        Notes:
+            Enable notifications first with :meth:`subscribe_focused_app`.
+        """
         stream = self.stream_events("focusedAppChanged", queue_size=queue_size)
         try:
             async for event in stream:
@@ -951,6 +1195,16 @@ class WaveLinkClient:
     async def stream_input_device_changes(
         self, *, queue_size: int | None = None
     ) -> AsyncIterator[InputDevice]:
+        """Yield typed partial or merged input-device notifications.
+
+        Args:
+            queue_size: Per-stream queue capacity, or ``None`` to use the client
+                default.
+
+        Yields:
+            The cached :class:`InputDevice` state after applying each
+            ``inputDeviceChanged`` notification.
+        """
         stream = self.stream_events("inputDeviceChanged", queue_size=queue_size)
         try:
             async for event in stream:
@@ -966,7 +1220,31 @@ class WaveLinkClient:
         *,
         timeout: float | None = None,
     ) -> JsonValue:
-        """Отправить JSON-RPC-вызов и дождаться соответствующего ответа."""
+        """Send a low-level JSON-RPC request and await its matching result.
+
+        Use this method for Wave Link RPC methods without a dedicated typed
+        wrapper. Concurrent calls are safe: each response is correlated by its
+        numeric JSON-RPC identifier. When automatic reconnection is already in
+        progress, a new call waits for it up to the effective RPC timeout.
+
+        Args:
+            method: Non-empty JSON-RPC method name.
+            params: JSON-serializable method parameters, or ``None``.
+            timeout: Per-call timeout in seconds. ``None`` uses ``rpc_timeout``;
+                if both are ``None``, the call waits indefinitely.
+
+        Returns:
+            The raw JSON-compatible value from the response's ``result`` field.
+
+        Raises:
+            ValueError: If ``method`` is empty or ``timeout`` is not positive.
+            TypeError: If ``params`` cannot be serialized as JSON.
+            WaveLinkDisconnectedError: If no connection is usable or the socket
+                closes while sending or waiting.
+            WaveLinkTimeoutError: If reconnection or the response exceeds the
+                effective timeout.
+            WaveLinkRpcError: If Wave Link returns a JSON-RPC ``error`` object.
+        """
         return await self._call(method, params, timeout=timeout)
 
     async def _call(
@@ -1059,6 +1337,12 @@ class WaveLinkClient:
     # ------------------------------------------------------------------
 
     async def get_application_info(self) -> ApplicationInfo:
+        """Fetch Wave Link application and interface metadata.
+
+        Returns:
+            Validated application metadata. The same value is stored in
+            :attr:`application_info`.
+        """
         return await self._get_application_info(allow_connecting=False)
 
     async def _get_application_info(self, *, allow_connecting: bool) -> ApplicationInfo:
@@ -1070,18 +1354,33 @@ class WaveLinkClient:
         return info
 
     async def get_channels(self) -> list[Channel]:
+        """Fetch all mixer channels and replace the channel cache.
+
+        Returns:
+            A new list of validated :class:`Channel` models in server order.
+        """
         result = await self.call("getChannels", None)
         channels = parse_schema_list(result, "channels", Channel, "getChannels")
         self._channels = channels
         return channels
 
     async def get_mixes(self) -> list[Mix]:
+        """Fetch all mixes and replace the mix cache.
+
+        Returns:
+            A new list of validated :class:`Mix` models in server order.
+        """
         result = await self.call("getMixes", None)
         mixes = parse_schema_list(result, "mixes", Mix, "getMixes")
         self._mixes = mixes
         return mixes
 
     async def get_input_devices(self) -> list[InputDevice]:
+        """Fetch all input devices and replace the input-device cache.
+
+        Returns:
+            A new list of devices with their nested inputs and effects.
+        """
         result = await self.call("getInputDevices", None)
         input_devices = parse_schema_list(
             result, "inputDevices", InputDevice, "getInputDevices"
@@ -1090,6 +1389,12 @@ class WaveLinkClient:
         return input_devices
 
     async def get_output_devices(self) -> OutputDevices:
+        """Fetch output devices and the selected main output.
+
+        Returns:
+            The validated response envelope. Its device list and main-output
+            reference also replace :attr:`output_devices` and :attr:`main_output`.
+        """
         result = await self.call("getOutputDevices", None)
         output_devices = parse_schema(result, OutputDevices, "getOutputDevices")
         self.main_output = output_devices.main_output
@@ -1097,7 +1402,17 @@ class WaveLinkClient:
         return output_devices
 
     async def set_plugin_info(self, connected_devices: list[str]) -> PluginInfoResult:
-        """Сообщить Wave Link семейства подключённых устройств Stream Deck."""
+        """Report connected Stream Deck device families to Wave Link.
+
+        The successfully submitted list is remembered and restored after an
+        automatic reconnection.
+
+        Args:
+            connected_devices: Device-family names expected by Wave Link.
+
+        Returns:
+            Validated ``setPluginInfo`` result, normally an empty model.
+        """
         devices = [str(device) for device in connected_devices]
         result = await self.call(
             "setPluginInfo",
@@ -1111,7 +1426,18 @@ class WaveLinkClient:
         device_id: str,
         inputs: list[InputUpdate],
     ) -> InputDeviceUpdate:
-        """Обновить один или несколько входов указанного входного устройства."""
+        """Apply one or more updates to an input device.
+
+        Args:
+            device_id: Parent input-device identifier.
+            inputs: Typed partial updates for inputs belonging to the device.
+
+        Returns:
+            The validated update object returned by Wave Link.
+
+        Raises:
+            TypeError: If any item in ``inputs`` is not :class:`InputUpdate`.
+        """
         for index, item in enumerate(inputs):
             if not isinstance(item, InputUpdate):
                 raise TypeError(f"inputs[{index}] must be InputUpdate")
@@ -1125,6 +1451,16 @@ class WaveLinkClient:
     async def set_input_mute(
         self, device_id: str, input_id: str, muted: bool
     ) -> InputDeviceUpdate:
+        """Set the mute state of one input.
+
+        Args:
+            device_id: Parent input-device identifier.
+            input_id: Target input identifier.
+            muted: Truthy to mute the input, falsy to unmute it.
+
+        Returns:
+            The validated ``setInputDevice`` response.
+        """
         return await self.set_input_device(
             device_id,
             [InputUpdate(id=str(input_id), is_muted=bool(muted))],
@@ -1133,6 +1469,20 @@ class WaveLinkClient:
     async def set_input_gain(
         self, device_id: str, input_id: str, value: float
     ) -> InputDeviceUpdate:
+        """Set the normalized gain of one input.
+
+        Args:
+            device_id: Parent input-device identifier.
+            input_id: Target input identifier.
+            value: Desired gain, clamped to the inclusive ``0.0``–``1.0`` range.
+
+        Returns:
+            The validated ``setInputDevice`` response.
+
+        Raises:
+            TypeError: If ``value`` is boolean or not numeric.
+            ValueError: If ``value`` is not finite.
+        """
         return await self.set_input_device(
             device_id,
             [InputUpdate(id=str(input_id), gain=LevelValue(clamp01(value)))],
@@ -1141,7 +1491,16 @@ class WaveLinkClient:
     async def set_input_gain_lock(
         self, device_id: str, input_id: str, enabled: bool
     ) -> InputDeviceUpdate:
-        """Enable or disable the hardware gain lock for an input."""
+        """Enable or disable the hardware gain lock for an input.
+
+        Args:
+            device_id: Parent input-device identifier.
+            input_id: Target input identifier.
+            enabled: Desired gain-lock state.
+
+        Returns:
+            The validated ``setInputDevice`` response.
+        """
         return await self.set_input_device(
             device_id,
             [
@@ -1155,6 +1514,21 @@ class WaveLinkClient:
     async def set_input_mic_pc_mix(
         self, device_id: str, input_id: str, value: float
     ) -> InputDeviceUpdate:
+        """Set the microphone/PC balance for a supported input.
+
+        Args:
+            device_id: Parent input-device identifier.
+            input_id: Target input identifier.
+            value: Desired balance, clamped to ``0.0``–``1.0``. Interpretation of
+                the endpoints follows the device's ``is_inverted`` metadata.
+
+        Returns:
+            The validated ``setInputDevice`` response.
+
+        Raises:
+            TypeError: If ``value`` is boolean or not numeric.
+            ValueError: If ``value`` is not finite.
+        """
         return await self.set_input_device(
             device_id,
             [
@@ -1174,7 +1548,18 @@ class WaveLinkClient:
         *,
         dsp: bool = False,
     ) -> InputDeviceUpdate:
-        """Включить программный либо аппаратный/DSP-эффект входа."""
+        """Enable or disable one software or hardware input effect.
+
+        Args:
+            device_id: Parent input-device identifier.
+            input_id: Target input identifier.
+            effect_id: Effect identifier returned by Wave Link.
+            enabled: Desired effect state.
+            dsp: Place the update in ``dspEffects`` instead of ``effects``.
+
+        Returns:
+            The validated ``setInputDevice`` response.
+        """
         effect = EffectUpdate(id=str(effect_id), is_enabled=bool(enabled))
         update = InputUpdate(id=str(input_id))
         if dsp:
@@ -1186,7 +1571,19 @@ class WaveLinkClient:
     async def set_output_device(
         self, params: OutputDeviceUpdateParams
     ) -> OutputDeviceUpdateResult:
-        """Отправить документированную структуру параметров ``setOutputDevice``."""
+        """Apply a typed ``setOutputDevice`` parameter shape.
+
+        Args:
+            params: Documented envelope, direct main-output reference, or direct
+                output-device update supported by known Wave Link versions.
+
+        Returns:
+            The validated response in whichever known output-update shape the
+            server returned.
+
+        Raises:
+            TypeError: If ``params`` is not a supported output update model.
+        """
         if not isinstance(
             params, (SetOutputDeviceParams, MainOutput, OutputDeviceUpdate)
         ):
@@ -1197,6 +1594,19 @@ class WaveLinkClient:
     async def set_main_output(
         self, output_device_id: str, output_id: str = ""
     ) -> OutputDeviceUpdateResult:
+        """Select or clear Wave Link's main output.
+
+        The documented nested payload is attempted first. If Wave Link reports
+        ``invalid params``, the client retries the older direct shape.
+
+        Args:
+            output_device_id: Identifier of the containing output device.
+            output_id: Identifier of the selected output. The default empty
+                string requests that the main output be cleared.
+
+        Returns:
+            The validated response from the accepted payload shape.
+        """
         main_output = MainOutput(
             output_device_id=str(output_device_id),
             output_id=str(output_id),
@@ -1244,36 +1654,113 @@ class WaveLinkClient:
     async def set_output_level(
         self, output_device_id: str, output_id: str, level: float
     ) -> OutputDeviceUpdateResult:
+        """Set the normalized level of one output.
+
+        Args:
+            output_device_id: Parent output-device identifier.
+            output_id: Target output identifier.
+            level: Desired level, clamped to ``0.0``–``1.0``.
+
+        Returns:
+            The validated ``setOutputDevice`` response.
+
+        Raises:
+            TypeError: If ``level`` is boolean or not numeric.
+            ValueError: If ``level`` is not finite.
+        """
         return await self._set_output_value(output_device_id, output_id, level=level)
 
     async def set_output_mute(
         self, output_device_id: str, output_id: str, muted: bool
     ) -> OutputDeviceUpdateResult:
+        """Set the mute state of one output.
+
+        Args:
+            output_device_id: Parent output-device identifier.
+            output_id: Target output identifier.
+            muted: Desired mute state.
+
+        Returns:
+            The validated ``setOutputDevice`` response.
+        """
         return await self._set_output_value(output_device_id, output_id, muted=muted)
 
     async def set_output_mix(
         self, output_device_id: str, output_id: str, mix_id: str
     ) -> OutputDeviceUpdateResult:
+        """Route one mix to an output.
+
+        Args:
+            output_device_id: Parent output-device identifier.
+            output_id: Target output identifier.
+            mix_id: Mix identifier returned by :meth:`get_mixes`.
+
+        Returns:
+            The validated ``setOutputDevice`` response.
+        """
         return await self._set_output_value(output_device_id, output_id, mix_id=mix_id)
 
     async def remove_output_from_mix(
         self, output_device_id: str, output_id: str
     ) -> OutputDeviceUpdateResult:
+        """Remove the current mix routing from an output.
+
+        This is equivalent to :meth:`set_output_mix` with an empty mix ID.
+
+        Args:
+            output_device_id: Parent output-device identifier.
+            output_id: Target output identifier.
+
+        Returns:
+            The validated ``setOutputDevice`` response.
+        """
         return await self.set_output_mix(output_device_id, output_id, "")
 
     async def set_channel(self, params: ChannelUpdate) -> ChannelUpdate:
-        """Обновить любой поддерживаемый набор свойств канала."""
+        """Apply an arbitrary typed partial channel update.
+
+        Args:
+            params: Channel identifier and one or more fields to change.
+
+        Returns:
+            The validated ``setChannel`` response.
+
+        Raises:
+            TypeError: If ``params`` is not :class:`ChannelUpdate`.
+        """
         if not isinstance(params, ChannelUpdate):
             raise TypeError("params must be ChannelUpdate")
         result = await self.call("setChannel", params.to_dict())
         return parse_schema(result, ChannelUpdate, "setChannel")
 
     async def set_channel_level(self, channel_id: str, level: float) -> ChannelUpdate:
+        """Set a channel's normalized global level.
+
+        Args:
+            channel_id: Target channel identifier.
+            level: Desired level, clamped to ``0.0``–``1.0``.
+
+        Returns:
+            The validated ``setChannel`` response.
+
+        Raises:
+            TypeError: If ``level`` is boolean or not numeric.
+            ValueError: If ``level`` is not finite.
+        """
         return await self.set_channel(
             ChannelUpdate(id=str(channel_id), level=clamp01(level))
         )
 
     async def set_channel_mute(self, channel_id: str, muted: bool) -> ChannelUpdate:
+        """Set a channel's global mute state.
+
+        Args:
+            channel_id: Target channel identifier.
+            muted: Desired mute state.
+
+        Returns:
+            The validated ``setChannel`` response.
+        """
         return await self.set_channel(
             ChannelUpdate(id=str(channel_id), is_muted=bool(muted))
         )
@@ -1281,7 +1768,23 @@ class WaveLinkClient:
     async def set_channel_mix_level(
         self, channel_id: str, mix_id: str, level: float
     ) -> ChannelUpdate:
-        """Задать уровень канала в миксе с поддержкой обеих известных форм ID."""
+        """Set a channel's level within one mix.
+
+        The client attempts the observed ``id`` payload first and retries with
+        ``mixId`` only when Wave Link returns ``invalid params``.
+
+        Args:
+            channel_id: Target channel identifier.
+            mix_id: Target mix identifier.
+            level: Desired per-mix level, clamped to ``0.0``–``1.0``.
+
+        Returns:
+            The validated ``setChannel`` response.
+
+        Raises:
+            TypeError: If ``level`` is boolean or not numeric.
+            ValueError: If ``level`` is not finite.
+        """
         try:
             return await self.set_channel(
                 ChannelUpdate(
@@ -1302,7 +1805,19 @@ class WaveLinkClient:
     async def set_channel_mix_mute(
         self, channel_id: str, mix_id: str, muted: bool
     ) -> ChannelUpdate:
-        """Заглушить канал в миксе с поддержкой обеих известных форм ID."""
+        """Set a channel's mute state within one mix.
+
+        The client attempts the observed ``id`` payload first and retries with
+        ``mixId`` only when Wave Link returns ``invalid params``.
+
+        Args:
+            channel_id: Target channel identifier.
+            mix_id: Target mix identifier.
+            muted: Desired per-mix mute state.
+
+        Returns:
+            The validated ``setChannel`` response.
+        """
         try:
             return await self.set_channel(
                 ChannelUpdate(
@@ -1323,6 +1838,16 @@ class WaveLinkClient:
     async def set_channel_effect_enabled(
         self, channel_id: str, effect_id: str, enabled: bool
     ) -> ChannelUpdate:
+        """Enable or disable one effect attached to a channel.
+
+        Args:
+            channel_id: Target channel identifier.
+            effect_id: Effect identifier returned in :attr:`Channel.effects`.
+            enabled: Desired effect state.
+
+        Returns:
+            The validated ``setChannel`` response.
+        """
         return await self.set_channel(
             ChannelUpdate(
                 id=str(channel_id),
@@ -1331,20 +1856,60 @@ class WaveLinkClient:
         )
 
     async def set_mix(self, params: MixUpdate) -> MixUpdate:
-        """Обновить любой поддерживаемый набор свойств микса."""
+        """Apply an arbitrary typed partial mix update.
+
+        Args:
+            params: Mix identifier and one or more fields to change.
+
+        Returns:
+            The validated ``setMix`` response.
+
+        Raises:
+            TypeError: If ``params`` is not :class:`MixUpdate`.
+        """
         if not isinstance(params, MixUpdate):
             raise TypeError("params must be MixUpdate")
         result = await self.call("setMix", params.to_dict())
         return parse_schema(result, MixUpdate, "setMix")
 
     async def set_mix_level(self, mix_id: str, level: float) -> MixUpdate:
+        """Set a mix's normalized master level.
+
+        Args:
+            mix_id: Target mix identifier.
+            level: Desired level, clamped to ``0.0``–``1.0``.
+
+        Returns:
+            The validated ``setMix`` response.
+
+        Raises:
+            TypeError: If ``level`` is boolean or not numeric.
+            ValueError: If ``level`` is not finite.
+        """
         return await self.set_mix(MixUpdate(id=str(mix_id), level=clamp01(level)))
 
     async def set_mix_mute(self, mix_id: str, muted: bool) -> MixUpdate:
+        """Set a mix's master mute state.
+
+        Args:
+            mix_id: Target mix identifier.
+            muted: Desired mute state.
+
+        Returns:
+            The validated ``setMix`` response.
+        """
         return await self.set_mix(MixUpdate(id=str(mix_id), is_muted=bool(muted)))
 
     async def add_to_channel(self, app_id: str, channel_id: str) -> Channel:
-        """Назначить приложение программному каналу."""
+        """Assign an application to a software channel.
+
+        Args:
+            app_id: Application identifier reported by Wave Link.
+            channel_id: Destination software-channel identifier.
+
+        Returns:
+            The validated channel returned by ``addToChannel``.
+        """
         result = await self.call(
             "addToChannel",
             {"appId": str(app_id), "channelId": str(channel_id)},
@@ -1352,7 +1917,22 @@ class WaveLinkClient:
         return parse_schema(result, Channel, "addToChannel")
 
     async def set_subscription(self, params: SubscriptionUpdate) -> SubscriptionUpdate:
-        """Обновить одну или несколько подписок на уведомления Wave Link."""
+        """Enable or disable typed Wave Link notifications.
+
+        Successful subscription payloads are remembered and automatically
+        restored after reconnection.
+
+        Args:
+            params: Focused-application or level-meter subscription update.
+
+        Returns:
+            The validated ``setSubscription`` response.
+
+        Raises:
+            TypeError: If ``params`` is not :class:`SubscriptionUpdate`.
+            WaveLinkProtocolError: If the response omits a requested
+                subscription field.
+        """
         if not isinstance(params, SubscriptionUpdate):
             raise TypeError("params must be SubscriptionUpdate")
         payload = params.to_dict()
@@ -1397,6 +1977,14 @@ class WaveLinkClient:
                 self._desired_level_meter_subscriptions.pop(existing_key, None)
 
     async def subscribe_focused_app(self, enabled: bool = True) -> SubscriptionUpdate:
+        """Enable or disable focused-application notifications.
+
+        Args:
+            enabled: ``True`` to subscribe or ``False`` to unsubscribe.
+
+        Returns:
+            The validated subscription response.
+        """
         return await self.set_subscription(
             SubscriptionUpdate(
                 focused_app_changed=FocusedAppSubscription(bool(enabled))
@@ -1411,6 +1999,21 @@ class WaveLinkClient:
         *,
         sub_id: str | None = None,
     ) -> SubscriptionUpdate:
+        """Enable or disable a real-time meter for one concrete object.
+
+        Args:
+            meter_type: Target category: ``input``, ``output``, ``channel``, or
+                ``mix``.
+            target_id: Identifier of the target object within that category.
+            enabled: ``True`` to subscribe or ``False`` to unsubscribe.
+            sub_id: Optional caller-defined identifier echoed in meter events.
+
+        Returns:
+            The validated subscription response.
+
+        Raises:
+            ValueError: If ``meter_type`` is not supported.
+        """
         if meter_type not in self.LEVEL_METER_TYPES:
             allowed = ", ".join(self.LEVEL_METER_TYPES)
             raise ValueError(
@@ -1428,13 +2031,34 @@ class WaveLinkClient:
         )
 
     async def subscribe_realtime(self) -> SubscriptionUpdate:
-        """Включить подписку, работоспособность которой проверена в Wave Link 3.2.5."""
+        """Enable the baseline focused-application real-time subscription.
+
+        This convenience method currently delegates to
+        ``subscribe_focused_app(True)``. It does not subscribe to level meters;
+        use :meth:`subscribe_level_meter` for those.
+
+        Returns:
+            The validated focused-application subscription response.
+        """
         return await self.subscribe_focused_app(True)
 
     async def try_subscribe_level_meters(
         self,
     ) -> dict[LevelMeterType, list[SubscriptionUpdate]]:
-        """Subscribe to every currently available meter by its concrete ID."""
+        """Subscribe to all currently discoverable real-time meters.
+
+        The method first enables focused-application notifications, fetches all
+        input devices, outputs, channels, and mixes concurrently, then creates a
+        level-meter subscription for each unique concrete identifier.
+
+        Returns:
+            Mapping from each meter type to its successful subscription responses.
+
+        Notes:
+            Subscriptions are performed sequentially and aren't transactional.
+            If one RPC fails, earlier subscriptions remain enabled and remembered
+            for reconnection.
+        """
         await self.subscribe_focused_app(True)
         input_devices, output_state, channels, mixes = await asyncio.gather(
             self.get_input_devices(),
@@ -1524,7 +2148,18 @@ def _merge_output_device(existing: OutputDevice, update: OutputDevice) -> Output
 
 
 def expect_object(result: Any, method: str) -> dict[str, Any]:
-    """Проверить результат JSON-RPC, который должен быть объектом."""
+    """Require an RPC result to be a JSON object.
+
+    Args:
+        result: Raw JSON-RPC result value.
+        method: Method name included in validation errors.
+
+    Returns:
+        ``result`` narrowed to a dictionary.
+
+    Raises:
+        WaveLinkProtocolError: If ``result`` is not a dictionary.
+    """
     if not isinstance(result, dict):
         raise WaveLinkProtocolError(
             f"{method} returned {type(result).__name__}; expected an object"
@@ -1536,7 +2171,20 @@ SchemaT = TypeVar("SchemaT", bound=JsonModel)
 
 
 def parse_schema(result: Any, schema: type[SchemaT], method: str) -> SchemaT:
-    """Convert a JSON-RPC object response into a validated object schema."""
+    """Convert an RPC object result into one validated model.
+
+    Args:
+        result: Raw JSON-RPC result value.
+        schema: Concrete :class:`JsonModel` subclass to construct.
+        method: Method name included in validation errors.
+
+    Returns:
+        A validated instance of ``schema``.
+
+    Raises:
+        WaveLinkProtocolError: If the result isn't an object or doesn't satisfy
+            ``schema``.
+    """
     value = expect_object(result, method)
     try:
         return schema.from_dict(value)
@@ -1550,7 +2198,21 @@ def parse_schema_list(
     schema: type[SchemaT],
     method: str,
 ) -> list[SchemaT]:
-    """Convert an object property containing a list of schema objects."""
+    """Convert an RPC response collection into validated models.
+
+    Args:
+        result: Raw JSON-RPC result expected to be an object.
+        key: Property containing the model array.
+        schema: Concrete model class for each array item.
+        method: Method name included in validation errors.
+
+    Returns:
+        A new list of validated ``schema`` instances.
+
+    Raises:
+        WaveLinkProtocolError: If the envelope, collection, or any item has an
+            invalid shape.
+    """
     container = expect_object(result, method)
     items = container.get(key)
     if not isinstance(items, list):
@@ -1568,7 +2230,17 @@ def parse_schema_list(
 
 
 def parse_output_device_result(result: Any) -> OutputDeviceUpdateResult:
-    """Parse all known result shapes returned by ``setOutputDevice``."""
+    """Parse any known result shape returned by ``setOutputDevice``.
+
+    Args:
+        result: Raw JSON-RPC result value.
+
+    Returns:
+        A documented envelope, main-output reference, or direct device update.
+
+    Raises:
+        WaveLinkProtocolError: If the result matches no valid known shape.
+    """
     value = expect_object(result, "setOutputDevice")
     try:
         if "mainOutput" in value or "outputDevice" in value:
@@ -1583,7 +2255,19 @@ def parse_output_device_result(result: Any) -> OutputDeviceUpdateResult:
 
 
 def clamp01(value: float) -> float:
-    """Ограничить числовой уровень Wave Link поддерживаемым диапазоном 0..1."""
+    """Convert a numeric Wave Link level and clamp it to ``0.0``–``1.0``.
+
+    Args:
+        value: Finite integer or floating-point level. Booleans are rejected even
+            though ``bool`` is an ``int`` subclass in Python.
+
+    Returns:
+        ``value`` as ``float``, clamped to the inclusive normalized range.
+
+    Raises:
+        TypeError: If ``value`` is boolean or cannot be converted to ``float``.
+        ValueError: If the converted value is NaN or infinite.
+    """
     if isinstance(value, bool):
         raise TypeError("Wave Link level must be numeric, not bool")
     number = float(value)

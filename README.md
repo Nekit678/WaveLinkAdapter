@@ -76,6 +76,7 @@ console that runs in a browser without Node.js or a separate build step.
 | 🎚️ | Mixer control | Channels, mixes, inputs, outputs, mute, levels, routing, and effects. |
 | 📡 | Event support | Raw and typed handlers, plus asynchronous event streams. |
 | 🧩 | Typed models | `dataclass` schemas, input validation, and preservation of unknown API fields. |
+| 📚 | IDE documentation | Detailed docstrings for every public class, method, model, result, and error. |
 | 🛠️ | Low-level access | A universal `call()` method for RPC methods without a dedicated wrapper. |
 | 📱 | Web interface | A ready-to-use local mixer for desktop and tablet browsers. |
 
@@ -514,7 +515,8 @@ WaveLinkAdapter/
 │       ├── models.py             # Typed API models
 │       └── py.typed              # PEP 561 typing marker
 ├── tests/
-│   └── test_client.py            # Core test suite
+│   ├── test_client.py            # Core test suite
+│   └── test_documentation.py     # Public docstring coverage
 └── examples/
     └── web_mixer/
         ├── server.py             # HTTP / WebSocket gateway

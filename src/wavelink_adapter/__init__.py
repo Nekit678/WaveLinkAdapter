@@ -1,4 +1,25 @@
-"""Public package interface for WaveLinkAdapter."""
+"""Public interface for the WaveLinkAdapter library.
+
+The package exposes the asynchronous :class:`WaveLinkClient`, typed response
+and update models, event callback types, connection state, and public
+exceptions from one stable import location.
+
+Typical usage::
+
+    import asyncio
+    from wavelink_adapter import WaveLinkClient
+
+    async def main() -> None:
+        async with WaveLinkClient() as client:
+            for channel in await client.get_channels():
+                print(channel.id, channel.name)
+
+    asyncio.run(main())
+
+Applications should prefer imports from ``wavelink_adapter``. The
+``wavelink_adapter.client`` and ``wavelink_adapter.models`` modules remain
+available when more focused API documentation or type discovery is useful.
+"""
 
 from .client import (
     ConnectionState,
@@ -107,4 +128,3 @@ __all__ = [
     "WaveLinkTimeoutError",
     "clamp01",
 ]
-
