@@ -9,7 +9,7 @@ from typing import Any
 
 import websockets
 
-from wavelink_core import ConnectionState, WaveLinkClient, WaveLinkRpcError
+from wavelink_adapter import ConnectionState, WaveLinkClient, WaveLinkRpcError
 from examples.web_mixer.server import WaveLinkWebSocketServer
 
 

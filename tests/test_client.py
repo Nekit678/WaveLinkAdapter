@@ -5,7 +5,7 @@ import json
 import unittest
 from unittest.mock import AsyncMock, Mock, call, patch
 
-from wavelink_core import (
+from wavelink_adapter import (
     ConnectionState,
     WaveLinkClient,
     WaveLinkDisconnectedError,
@@ -14,7 +14,7 @@ from wavelink_core import (
     WaveLinkTimeoutError,
     clamp01,
 )
-from wavelink_types import (
+from wavelink_adapter import (
     Channel,
     ChannelMix,
     ChannelUpdate,
@@ -468,7 +468,7 @@ class WaveLinkTransportTests(unittest.IsolatedAsyncioTestCase):
         client = WaveLinkClient(**client_kwargs)
         client.discover_ports = Mock(return_value=[1884])  # type: ignore[method-assign]
         connector = AsyncMock(return_value=fake_socket)
-        patcher = patch("wavelink_core.websockets.connect", connector)
+        patcher = patch("wavelink_adapter.client.websockets.connect", connector)
         patcher.start()
         self.addCleanup(patcher.stop)
         await client.connect()
@@ -532,7 +532,7 @@ class WaveLinkTransportTests(unittest.IsolatedAsyncioTestCase):
 
         client.on("changed", broken_handler)  # type: ignore[arg-type]
         client.on("changed", healthy_handler)  # type: ignore[arg-type]
-        with self.assertLogs("wavelink_core", level="ERROR"):
+        with self.assertLogs("wavelink_adapter.client", level="ERROR"):
             await socket.notify("changed", {})
             await asyncio.wait_for(handled.wait(), timeout=0.2)
 
@@ -718,7 +718,7 @@ class WaveLinkTransportTests(unittest.IsolatedAsyncioTestCase):
         client.discover_ports = Mock(return_value=[1884])  # type: ignore[method-assign]
         connector = AsyncMock(return_value=socket)
 
-        with patch("wavelink_core.websockets.connect", connector):
+        with patch("wavelink_adapter.client.websockets.connect", connector):
             task = asyncio.create_task(client.connect())
             while not socket.sent:
                 await asyncio.sleep(0)
@@ -805,7 +805,7 @@ class WaveLinkReconnectTests(unittest.IsolatedAsyncioTestCase):
         client.discover_ports = Mock(return_value=[1884])  # type: ignore[method-assign]
         connector = AsyncMock(side_effect=[first_socket, second_socket])
 
-        with patch("wavelink_core.websockets.connect", connector):
+        with patch("wavelink_adapter.client.websockets.connect", connector):
             await client.connect()
             await first_socket.remote_close()
             async with asyncio.timeout(0.5):
@@ -837,7 +837,7 @@ class WaveLinkReconnectTests(unittest.IsolatedAsyncioTestCase):
         client.discover_ports = Mock(return_value=[1884])  # type: ignore[method-assign]
         connector = AsyncMock(side_effect=[first_socket, second_socket])
 
-        with patch("wavelink_core.websockets.connect", connector):
+        with patch("wavelink_adapter.client.websockets.connect", connector):
             await client.connect()
             await client.set_plugin_info(["SDPlus"])
             await client.subscribe_focused_app()
@@ -864,7 +864,7 @@ class WaveLinkReconnectTests(unittest.IsolatedAsyncioTestCase):
         client.discover_ports = Mock(return_value=[1884])  # type: ignore[method-assign]
         connector = AsyncMock(side_effect=[first_socket, second_socket])
 
-        with patch("wavelink_core.websockets.connect", connector):
+        with patch("wavelink_adapter.client.websockets.connect", connector):
             await client.connect()
             await client.try_subscribe_level_meters()
             await first_socket.remote_close()
@@ -912,9 +912,9 @@ class WaveLinkReconnectTests(unittest.IsolatedAsyncioTestCase):
             side_effect=[first_socket, OSError("app is restarting"), recovered_socket]
         )
 
-        with patch("wavelink_core.websockets.connect", connector):
+        with patch("wavelink_adapter.client.websockets.connect", connector):
             await client.connect()
-            with self.assertLogs("wavelink_core", level="WARNING"):
+            with self.assertLogs("wavelink_adapter.client", level="WARNING"):
                 await first_socket.remote_close()
                 async with asyncio.timeout(0.5):
                     while connector.await_count < 3:
@@ -931,7 +931,7 @@ class WaveLinkReconnectTests(unittest.IsolatedAsyncioTestCase):
         client.discover_ports = Mock(return_value=[1884])  # type: ignore[method-assign]
         connector = AsyncMock(return_value=socket)
 
-        with patch("wavelink_core.websockets.connect", connector):
+        with patch("wavelink_adapter.client.websockets.connect", connector):
             await client.connect()
             await client.close()
             await asyncio.sleep(0.03)
@@ -947,7 +947,7 @@ class WaveLinkReconnectTests(unittest.IsolatedAsyncioTestCase):
         client.discover_ports = Mock(return_value=[1884])  # type: ignore[method-assign]
         connector = AsyncMock(side_effect=[first_socket, second_socket])
 
-        with patch("wavelink_core.websockets.connect", connector):
+        with patch("wavelink_adapter.client.websockets.connect", connector):
             await client.connect()
             pending = asyncio.create_task(client.set_channel_mute("channel", True))
             while len(first_socket.sent) < 2:

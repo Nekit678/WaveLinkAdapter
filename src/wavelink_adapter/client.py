@@ -22,7 +22,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Protocol, TypeVar
 import websockets
 from websockets.typing import Origin
 
-from wavelink_types import (
+from .models import (
     ApplicationInfo,
     Channel,
     CreateProfileRequested,

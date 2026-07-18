@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wavelink-adapter"
+version = "0.1.0"
+description = "Async Python client for the Elgato Wave Link 3.x local API"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Nekit678" },
+]
+dependencies = [
+    "websockets>=16,<17",
+]
+keywords = [
+    "asyncio",
+    "audio",
+    "elgato",
+    "json-rpc",
+    "wave-link",
+    "websocket",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Typing :: Typed",
+]
+
+[project.optional-dependencies]
+dev = [
+    "build",
+    "ruff",
+    "twine",
+]
+
+[project.urls]
+Homepage = "https://github.com/Nekit678/WaveLinkAdapter"
+Repository = "https://github.com/Nekit678/WaveLinkAdapter"
+Issues = "https://github.com/Nekit678/WaveLinkAdapter/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["wavelink_adapter*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+wavelink_adapter = ["py.typed"]
+
+[tool.ruff]
+target-version = "py311"
+

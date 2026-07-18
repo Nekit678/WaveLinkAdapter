@@ -1,6 +1,6 @@
 <div align="center">
-  <p><strong>English</strong> · <a href="README.ru.md">Русский</a></p>
-  <img src="examples/web_mixer/web/favicon.svg" width="96" height="96" alt="WaveLinkAdapter logo">
+  <p><strong>English</strong> · <a href="https://github.com/Nekit678/WaveLinkAdapter/blob/main/README.ru.md">Русский</a></p>
+  <img src="https://raw.githubusercontent.com/Nekit678/WaveLinkAdapter/main/examples/web_mixer/web/favicon.svg" width="96" height="96" alt="WaveLinkAdapter logo">
   <h1>WaveLinkAdapter</h1>
   <p><strong>An asynchronous Python client for the local Elgato Wave Link 3.x WebSocket / JSON-RPC API</strong></p>
   <p>
@@ -77,7 +77,7 @@ console that runs in a browser without Node.js or a separate build step.
 ```mermaid
 flowchart LR
     WL["Elgato Wave Link<br>Windows"] <-->|"WebSocket · JSON-RPC"| Core["WaveLinkClient<br>asyncio"]
-    Core --> Types["wavelink_types<br>dataclass models"]
+    Core --> Types["wavelink_adapter.models<br>dataclass models"]
     Core --> App["Your application"]
     Core --> Gateway["WebSocket gateway"]
     Gateway --> Browser["Web Mixer<br>browser / tablet"]
@@ -98,7 +98,14 @@ Python 3.11 is required because the client uses `asyncio.timeout()`.
 
 ## Installation
 
-Clone the repository and create a virtual environment:
+Install the released library from PyPI:
+
+```bash
+python -m pip install wavelink-adapter
+```
+
+To work on the project from source, clone the repository and create a virtual
+environment:
 
 ```bash
 git clone https://github.com/Nekit678/WaveLinkAdapter.git
@@ -112,7 +119,7 @@ python -m venv .venv
 ```powershell
 .venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+python -m pip install -e ".[dev]"
 ```
 
 </details>
@@ -123,7 +130,7 @@ python -m pip install -r requirements.txt
 ```bash
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+python -m pip install -e ".[dev]"
 ```
 
 </details>
@@ -136,7 +143,7 @@ automatically searches mounted Windows drives for `ws-info.json`.
 ```python
 import asyncio
 
-from wavelink_core import WaveLinkClient
+from wavelink_adapter import WaveLinkClient
 
 
 async def main() -> None:
@@ -157,7 +164,7 @@ when leaving it, including when an exception is raised.
 ### Long-lived client
 
 ```python
-from wavelink_core import WaveLinkClient
+from wavelink_adapter import WaveLinkClient
 
 
 client = WaveLinkClient(
@@ -180,9 +187,11 @@ client can safely handle multiple concurrent RPC calls.
 
 ## Web Mixer
 
-The ready-to-run example lives in [`examples/web_mixer`](examples/web_mixer).
+The ready-to-run example lives in
+[`examples/web_mixer`](https://github.com/Nekit678/WaveLinkAdapter/tree/main/examples/web_mixer).
 It starts a Python gateway, serves the bundled web interface, and shares one
-Wave Link connection across all connected browsers.
+Wave Link connection across all connected browsers. The Web Mixer is available
+in a source checkout and isn't installed by the core library wheel.
 
 ```bash
 python -m examples.web_mixer.server
@@ -287,7 +296,7 @@ range and reject `NaN`, infinity, and `bool` values.
 
 ### Typed models
 
-High-level methods return `dataclass` objects from `wavelink_types` instead of
+High-level methods return `dataclass` objects from `wavelink_adapter` instead of
 raw JSON dictionaries. Fields use idiomatic `snake_case` names:
 
 ```python
@@ -302,7 +311,7 @@ for mix in channel.mixes or []:
 Every schema supports conversion in both directions:
 
 ```python
-from wavelink_types import ChannelUpdate
+from wavelink_adapter import ChannelUpdate
 
 
 update = ChannelUpdate(id="channel-id", level=0.5, is_muted=False)
@@ -347,7 +356,7 @@ await client.subscribe_focused_app()
 Known events also support typed handlers:
 
 ```python
-from wavelink_types import FocusedAppChanged
+from wavelink_adapter import FocusedAppChanged
 
 
 def on_focused_app(event: FocusedAppChanged) -> None:
@@ -448,7 +457,7 @@ at the `call()` and transport layers.
 ## Error handling
 
 ```python
-from wavelink_core import (
+from wavelink_adapter import (
     WaveLinkDisconnectedError,
     WaveLinkProtocolError,
     WaveLinkRpcError,
@@ -517,12 +526,18 @@ the transport and API responses.
 
 ```text
 WaveLinkAdapter/
-├── wavelink_core.py              # WebSocket transport and WaveLinkClient
-├── wavelink_types.py             # Typed API models
+├── pyproject.toml                # Build and package metadata
+├── LICENSE                       # MIT license
+├── src/
+│   └── wavelink_adapter/
+│       ├── __init__.py           # Public API
+│       ├── client.py             # WebSocket transport and WaveLinkClient
+│       ├── models.py             # Typed API models
+│       └── py.typed              # PEP 561 typing marker
+├── tests/
+│   └── test_client.py            # Core test suite
 ├── wavelink_method_tester.py     # CLI for exercising public methods
 ├── live_wavelink_integration.py  # Checks against a real Wave Link instance
-├── test_wavelink_core.py         # Core test suite
-├── requirements.txt
 └── examples/
     └── web_mixer/
         ├── server.py             # HTTP / WebSocket gateway
@@ -536,8 +551,14 @@ Before submitting changes, run:
 
 ```bash
 python -m unittest discover -v
-python -m compileall wavelink_core.py wavelink_types.py examples
+python -m compileall src tests examples
+python -m build
+python -m twine check dist/*
 ```
+
+Release publishing is automated through GitHub Actions and PyPI Trusted
+Publishing. See the [release guide](https://github.com/Nekit678/WaveLinkAdapter/blob/main/RELEASING.md)
+for the one-time setup and versioning procedure.
 
 Issues and pull requests are welcome. When changing the RPC contract, include a
 test that captures the new request or response shape and mention the Wave Link

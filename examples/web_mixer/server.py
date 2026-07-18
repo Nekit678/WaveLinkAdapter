@@ -24,7 +24,7 @@ from websockets.datastructures import Headers
 from websockets.http11 import Request, Response
 from websockets.typing import Origin
 
-from wavelink_core import (
+from wavelink_adapter import (
     ConnectionState,
     WaveLinkClient,
     WaveLinkDisconnectedError,
@@ -32,7 +32,7 @@ from wavelink_core import (
     WaveLinkRpcError,
     WaveLinkTimeoutError,
 )
-from wavelink_types import JsonModel, JsonValue
+from wavelink_adapter import JsonModel, JsonValue
 
 
 JsonRpcId = str | int | None
